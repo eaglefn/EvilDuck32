@@ -3,4 +3,18 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Referenzprojekte (lokal behalten, nicht ins Repo)
 SuperWiFiDuck/
+CapibaraZero_fw-0.5.2/
+ESP32-S3-LCD-1.47-Demo/
+esp32-pendrive-s3-wifi-dongle/
+
+# Scripts & lokale Konfiguration
+start_claude.sh
+
+# macOS
+.DS_Store
+
+# Claude Code lokale Einstellungen
+.claude/
