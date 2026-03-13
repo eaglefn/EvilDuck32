@@ -47,8 +47,19 @@ esp_err_t sdcard_init(void)
     mounted = true;
     sdmmc_card_print_info(stdout, card);
 
-    // Create payloads directory
+    // Create directory structure
     ESP_LOGI(TAG, "Creating directories...");
+
+    // /scripts – DuckyScript files (.txt)
+    if (mkdir(SD_MOUNT_POINT "/scripts", 0775) == 0) {
+        ESP_LOGI(TAG, "Created /scripts directory");
+    } else if (errno == EEXIST) {
+        ESP_LOGI(TAG, "/scripts directory already exists");
+    } else {
+        ESP_LOGW(TAG, "Failed to create /scripts: %d", errno);
+    }
+
+    // /payloads – binary payload files (.exe, .bin, .ps1, etc.)
     if (mkdir(SD_MOUNT_POINT "/payloads", 0775) == 0) {
         ESP_LOGI(TAG, "Created /payloads directory");
     } else if (errno == EEXIST) {
@@ -67,11 +78,11 @@ esp_err_t sdcard_init(void)
 
     // Test write access IMPORTANT
     ESP_LOGI(TAG, "Testing write access...");
-    FILE *test_f = fopen(SD_MOUNT_POINT "/payloads/test_write.txt", "w");
+    FILE *test_f = fopen(SD_MOUNT_POINT "/scripts/test_write.txt", "w");
     if (test_f) {
         fprintf(test_f, "SD Card Write Test - Success!\n");
         fclose(test_f);
-        unlink(SD_MOUNT_POINT "/payloads/test_write.txt");
+        unlink(SD_MOUNT_POINT "/scripts/test_write.txt");
         ESP_LOGI(TAG, "✓ SD Card write test PASSED - SD is writable");
     } else {
         ESP_LOGE(TAG, "✗ SD Card write test FAILED - Cannot write to SD!");
@@ -96,28 +107,39 @@ bool sdcard_is_mounted(void)
     return mounted;
 }
 
-int sdcard_list_payloads(char payloads[][64], int max_count)
+static int sdcard_list_dir(const char *dirpath, char names[][64], int max_count)
 {
     if (!mounted) return 0;
 
-    DIR *dir = opendir(SD_MOUNT_POINT "/payloads");
+    DIR *dir = opendir(dirpath);
     if (!dir) return 0;
 
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL && count < max_count) {
-        // Skip . and .. – do NOT use d_type, FATFS VFS returns DT_UNKNOWN
         if (entry->d_name[0] == '.') continue;
         char full_path[128];
-        snprintf(full_path, sizeof(full_path), SD_MOUNT_POINT "/payloads/%s", entry->d_name);
+        snprintf(full_path, sizeof(full_path), "%s/%s", dirpath, entry->d_name);
         struct stat st;
         if (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-        strncpy(payloads[count], entry->d_name, 63);
-        payloads[count][63] = '\0';
+        strncpy(names[count], entry->d_name, 63);
+        names[count][63] = '\0';
         count++;
     }
     closedir(dir);
     return count;
+}
+
+// List DuckyScript files from /sdcard/scripts/
+int sdcard_list_scripts(char scripts[][64], int max_count)
+{
+    return sdcard_list_dir(SD_MOUNT_POINT "/scripts", scripts, max_count);
+}
+
+// List payload files from /sdcard/payloads/
+int sdcard_list_payloads(char payloads[][64], int max_count)
+{
+    return sdcard_list_dir(SD_MOUNT_POINT "/payloads", payloads, max_count);
 }
 
 esp_err_t sdcard_read_file(const char *path, char *buf, size_t buf_size, size_t *bytes_read)

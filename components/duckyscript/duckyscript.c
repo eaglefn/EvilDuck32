@@ -648,7 +648,7 @@ esp_err_t ducky_run_script(const char *filename) {
     // Fallback: SD card
     if (!fp && sdcard_is_mounted()) {
         char path[128];
-        snprintf(path, sizeof(path), "/sdcard/payloads/%s", filename);
+        snprintf(path, sizeof(path), "/sdcard/scripts/%s", filename);
         fp = fopen(path, "r");
         if (fp) ESP_LOGI(TAG, "Running script from SD: %s", path);
     }

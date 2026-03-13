@@ -107,7 +107,7 @@ Unterstützte Befehle (siehe `components/duckyscript/duckyscript.c`):
 - `LOCALE`, `LED`, `VAR`, `REPEAT`, `KEYCODE`
 - `ATTACKMODE` (siehe unten)
 
-Skripte aus NVS (primär) oder SD-Karte `/sdcard/payloads/*.txt` (Fallback)
+Skripte aus NVS (primär) oder SD-Karte `/sdcard/scripts/*.txt` (Fallback)
 
 ### ATTACKMODE – Bash Bunny Philosophie
 

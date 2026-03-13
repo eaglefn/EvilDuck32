@@ -63,8 +63,8 @@ esp_err_t script_storage_get_all(script_storage_entry_t *scripts, int max_count,
 
 // ===== Sync API (NVS <-> SD card) =====
 
-// SD payloads directory (relative to SD mount point)
-#define SD_PAYLOADS_DIR "/sdcard/payloads"
+// SD scripts directory – DuckyScript files synced between NVS and SD card
+#define SD_PAYLOADS_DIR "/sdcard/scripts"
 
 typedef enum {
     SYNC_ACTION_EXPORT = 0,   // NVS only → write to SD

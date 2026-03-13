@@ -16,6 +16,7 @@
 esp_err_t sdcard_init(void);
 void sdcard_deinit(void);
 bool sdcard_is_mounted(void);
+int sdcard_list_scripts(char scripts[][64], int max_count);
 int sdcard_list_payloads(char payloads[][64], int max_count);
 esp_err_t sdcard_read_file(const char *path, char *buf, size_t buf_size, size_t *bytes_read);
 esp_err_t sdcard_write_file(const char *path, const char *data, size_t len);

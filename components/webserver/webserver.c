@@ -186,7 +186,7 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 
 "<section>"
 "<h1>SD Card Sync</h1>"
-"<p style='color:#888;font-size:0.9rem'>Compares scripts in internal storage (NVS) with <code>/payloads/</code> on the SD card.</p>"
+"<p style='color:#888;font-size:0.9rem'>Compares scripts in internal storage (NVS) with <code>/scripts/</code> on the SD card.</p>"
 "<div class='row'>"
 "<button class='primary' onclick='syncPreview()'>&#x1F50D; Preview</button>"
 "<button class='success' id='syncExecBtn' onclick='syncExecute()' style='display:none'>&#x2713; Execute Sync</button>"
@@ -239,7 +239,7 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 
 "<h1>DuckyScript Commands</h1>"
 "<p>EvilDuck32 supports the standard DuckyScript language for USB HID automation. "
-"Scripts are stored in NVS flash or on the SD card (<code>/sdcard/payloads/</code>).</p>"
+"Scripts are stored in NVS flash or on the SD card (<code>/sdcard/scripts/</code>).</p>"
 "<div class='note'>Commands are <b>case-insensitive</b>. "
 "Lines starting with <code>REM</code> or <code>#</code> are comments. "
 "A default delay of <code>100&thinsp;ms</code> is applied between commands.</div>"
@@ -957,9 +957,9 @@ static void handle_api_upload(int sock, const char *body, int body_len) {
         content_len = boundary_end - content;
     }
 
-    // Build path and save
+    // Build path and save to scripts directory
     char path[128];
-    snprintf(path, sizeof(path), "payloads/%s", filename);
+    snprintf(path, sizeof(path), "scripts/%s", filename);
 
     esp_err_t ret = sdcard_write_file(path, content, content_len);
 
@@ -1163,7 +1163,7 @@ static void handle_api_backup(int sock) {
         if (ret == ESP_OK) {
             // Write to SD card
             char path[128];
-            snprintf(path, sizeof(path), "payloads/%s", names[i]);
+            snprintf(path, sizeof(path), "scripts/%s", names[i]);
 
             ret = sdcard_write_file(path, content, strlen(content));
             if (ret == ESP_OK) {
@@ -1199,11 +1199,11 @@ static void handle_api_restore(int sock) {
         return;
     }
 
-    // Get all script names from SD card
+    // Get all script names from /sdcard/scripts/
     char payloads[MAX_SCRIPTS][64];
-    int count = sdcard_list_payloads(payloads, MAX_SCRIPTS);
+    int count = sdcard_list_scripts(payloads, MAX_SCRIPTS);
 
-    ESP_LOGI(TAG, "Restoring %d scripts from SD-Card to NVS", count);
+    ESP_LOGI(TAG, "Restoring %d scripts from SD-Card /scripts/ to NVS", count);
 
     int restored = 0;
     int failed = 0;
@@ -1213,7 +1213,9 @@ static void handle_api_restore(int sock) {
         char content[MAX_SCRIPT_SIZE + 1];
         size_t bytes_read = 0;
 
-        esp_err_t ret = sdcard_read_file(payloads[i], content, sizeof(content), &bytes_read);
+        char script_path[96];
+        snprintf(script_path, sizeof(script_path), "scripts/%s", payloads[i]);
+        esp_err_t ret = sdcard_read_file(script_path, content, sizeof(content), &bytes_read);
         if (ret == ESP_OK) {
             content[bytes_read] = '\0';
 
