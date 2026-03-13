@@ -1,0 +1,243 @@
+# EviDuck32 – ESP32-S3 Offensive USB Toolkit
+
+## Projektübersicht
+
+EviDuck32 ist ein Open‑Source‑Security‑Tool auf Basis des ESP‑IDF Frameworks für den ESP32‑S3. Das Projekt implementiert eine modulare Plattform für USB‑basierte Angriffssimulationen und Automatisierungstests. Ziel ist es, eine flexible Alternative zu bekannten Tools wie dem Bash Bunny bereitzustellen, die vollständig auf dem offiziellen Espressif IoT Development Framework (ESP‑IDF) basiert.
+
+Die Firmware nutzt ausschließlich ESP‑IDF‑Komponenten und verzichtet vollständig auf Arduino‑Bibliotheken oder die Arduino‑IDE. Das Projekt wird mit PlatformIO entwickelt und gebaut, wobei PlatformIO als Entwicklungs‑ und Build‑Umgebung für ESP‑IDF dient. Dadurch erhält das Projekt direkten Zugriff auf Hardware‑Funktionen, USB‑Stacks und Netzwerkkomponenten des ESP32‑S3.
+
+Die Hardwareplattform ist das Waveshare ESP32‑S3 LCD 1.47 Board mit integriertem Display und MicroSD‑Slot.
+
+## Hardwareplattform
+
+Das Projekt nutzt das Waveshare ESP32‑S3‑LCD‑1.47 Board mit folgenden relevanten Funktionen:
+
+* ESP32‑S3 Dual‑Core MCU
+* Native USB‑OTG Unterstützung
+* 1.47" TFT LCD Display
+* MicroSD‑Karten Slot
+* WiFi 2.4 GHz
+* Bluetooth
+* Erweiterbare GPIO
+
+Diese Funktionen ermöglichen eine kompakte Plattform für USB‑Emulation, Netzwerkkommunikation und lokale Statusanzeige.
+
+## Hauptfunktionen
+
+### USB HID Emulation
+
+EviDuck32 implementiert USB‑HID‑Funktionalität über den TinyUSB‑Stack des ESP‑IDF. Das Gerät kann sich gegenüber einem Host als USB‑Keyboard oder USB‑Mouse ausgeben und automatisierte Eingaben senden.
+
+### DuckyScript Interpreter
+
+Die Firmware enthält einen Interpreter für DuckyScript‑ähnliche Skripte. Die Implementierung orientiert sich konzeptionell am Open‑Source‑Projekt **SuperWiFiDuck**, dessen Interpreterstruktur als Grundlage für die Skriptverarbeitung dient. Skripte werden von der SD‑Karte geladen und sequenziell ausgeführt.
+
+Unterstützte Befehle umfassen unter anderem:
+
+* STRING
+* DELAY
+* ENTER
+* GUI
+* CTRL
+* ALT
+* SHIFT
+* REM
+
+Zusätzlich werden projektspezifische Erweiterungen implementiert, um Netzwerk‑ und Moduswechsel zu steuern sowie Attack‑Modes direkt aus einem Skript heraus zu ändern.
+
+### Attack Modes
+
+EviDuck32 unterstützt verschiedene **ATTACKMODE**‑Konfigurationen, die sich konzeptionell am Verhalten des bekannten **BashBunny**‑Tools orientieren.
+
+Unterstützte Modi:
+
+* HID
+* Storage
+* RNDIS
+* Bluetooth
+
+Die Modi bestimmen, welche USB‑ oder Netzwerkfunktionen gegenüber dem Host aktiviert werden. Der Modus kann dynamisch über Skripte gewechselt werden und löst eine erneute USB‑Enumeration aus, sodass sich das Gerät für den Zielhost als neue Gerätekombination präsentiert.
+
+### Dynamischer Moduswechsel
+
+Der Wechsel zwischen verschiedenen Attack‑Modes kann direkt innerhalb eines Skripts erfolgen. Dadurch lassen sich komplexe Angriffsszenarien automatisieren, ohne physische Tasten zu betätigen.
+
+Beispiel:
+
+ATTACKMODE HID
+ATTACKMODE STORAGE
+ATTACKMODE RNDIS
+
+Der Wechsel löst eine Re‑Enumeration des USB‑Geräts aus.
+
+### USB Mass Storage
+
+Über den MicroSD‑Slot kann EviDuck32 als USB‑Mass‑Storage‑Device fungieren. Der Host erkennt das Gerät als USB‑Speicherlaufwerk.
+
+Die SD‑Karte dient gleichzeitig als Speicher für:
+
+* Payload‑Skripte
+* Konfigurationsdateien
+* Logdateien
+
+### WiFi Access Point
+
+EviDuck32 kann einen eigenen WiFi Access Point starten. Dieser dient zur Verwaltung des Geräts ohne physische Verbindung.
+
+Typische Funktionen:
+
+* Upload neuer Payloads
+* Starten von Skripten
+* Anzeigen von Statusinformationen
+
+### Webserver
+
+Ein integrierter HTTP‑Server stellt eine Weboberfläche zur Verfügung. Diese erlaubt die Steuerung des Geräts über einen Browser.
+
+Die Weboberfläche ist speziell **für Smartphones optimiert** und kann komfortabel über mobile Geräte bedient werden, wenn sich diese mit dem Access Point des Geräts verbinden.
+
+Beispiele für Funktionen:
+
+* Payload‑Management
+* Upload und Löschen von Skripten
+* Log‑Anzeige
+* Gerätestatus
+* Moduswechsel
+* Starten von Payloads
+
+### Bluetooth Unterstützung
+
+Das System kann Bluetooth‑Funktionen bereitstellen, beispielsweise zur Fernsteuerung oder zur Emulation zusätzlicher HID‑Geräte.
+
+### Display‑Statusanzeigen
+
+Das integrierte 1.47" Display zeigt Systeminformationen an.
+
+Darstellbare Informationen:
+
+* aktueller Attack‑Mode
+* ausgeführtes Payload
+* WLAN‑Status
+* IP‑Adresse
+* SD‑Kartenstatus
+
+Das Display dient außerdem als visuelle Rückmeldung während der Skriptausführung.
+
+## Systemarchitektur
+
+Die Firmware ist modular aufgebaut und nutzt mehrere ESP‑IDF‑Komponenten.
+
+Komponentenübersicht:
+
+* USB Device Stack (TinyUSB)
+* HID Module
+* Mass Storage Module
+* DuckyScript Interpreter
+* WiFi Manager
+* HTTP Webserver
+* SD‑Card Filesystem
+* Display Controller
+
+Die Komponenten kommunizieren über FreeRTOS‑Tasks.
+
+## Entwicklungsumgebung
+
+EviDuck32 wird mit **PlatformIO** entwickelt. PlatformIO dient als Entwicklungs‑, Build‑ und Deployment‑Umgebung und nutzt intern das **ESP‑IDF Framework**.
+
+Wichtige Eigenschaften der Entwicklungsumgebung:
+
+* Framework: ESP‑IDF
+* Build‑System: PlatformIO
+* Sprache: C / C++
+* USB‑Stack: TinyUSB
+* RTOS: FreeRTOS
+
+Die Nutzung von PlatformIO ermöglicht:
+
+* reproduzierbare Builds
+* integriertes Dependency‑Management
+* einfaches Flashen und Debugging
+* Integration in IDEs wie VSCode
+
+Typische Projektdateien:
+
+* `platformio.ini`
+* `sdkconfig`
+* `sdkconfig.defaults`
+
+
+## Softwarestruktur
+
+Beispielhafte Projektstruktur:
+
+components/
+
+usb
+hid
+rndis
+storage
+
+core
+
+script_engine
+attackmode_manager
+
+network
+
+wifi_manager
+webserver
+
+ui
+
+display
+
+main/
+
+app_main.c
+
+## Storage Layout
+
+Die SD‑Karte enthält eine definierte Ordnerstruktur:
+
+/payloads
+/config
+/logs
+
+Payload‑Skripte werden aus dem Verzeichnis payloads geladen.
+
+## Referenz- und Beispielprojekte
+
+Zur Unterstützung der Entwicklung enthält der Projektordner bereits mehrere **Beispielprojekte in verschiedenen Unterordnern**. Diese dienen als technische Referenz für einzelne Funktionen des Systems und können direkt als Grundlage für Module von EviDuck32 verwendet werden.
+
+Die Beispiele decken typischerweise folgende Bereiche ab:
+
+* USB HID Implementierungen
+* TinyUSB Beispiele
+* SD‑Card Zugriff
+* WiFi Access Point Konfiguration
+* HTTP Webserver Implementierungen
+* Display‑Ansteuerung
+
+Die Beispielprojekte können einzeln getestet und anschließend in die modulare Architektur von EviDuck32 integriert werden.
+
+Zusätzlich können während der Entwicklung weitere **Open‑Source‑Bibliotheken, Codebeispiele und Projekte aus dem Internet** recherchiert und integriert werden, sofern diese mit dem ESP‑IDF Framework kompatibel sind.
+
+Bevorzugt werden Implementierungen aus folgenden Quellen:
+
+* ESP‑IDF Beispielprojekten
+* TinyUSB Referenzimplementierungen
+* Open‑Source‑Security‑Tools
+* ESP32 Community Projekten
+
+Diese Referenzen dienen ausschließlich als technische Grundlage für einzelne Module und werden bei Bedarf an die Architektur von EviDuck32 angepasst.
+
+## Ziel des Projekts
+
+EviDuck32 soll eine offene Plattform für Sicherheitsforschung und automatisierte Testumgebungen bieten. Das System kann für Penetration‑Testing‑Simulationen, USB‑Security‑Tests und automatisierte Systeminteraktionen eingesetzt werden.
+
+Der Fokus liegt auf einer vollständig ESP‑IDF‑basierten Implementierung, um maximale Kontrolle über Hardware und Firmware zu gewährleisten.
+
+Erstelle nun einen Projektplan und mache Vorschläge über die Vorgehensweise. Ich nutze einen Mac für die Programmierung. Schlage auch hier vor, wie am besten entwickelt und getestet werden kann.
+
+
+
