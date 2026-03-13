@@ -419,12 +419,9 @@ static void dhcp_send_reply(const uint8_t *caller_frame, uint16_t frame_len, uin
 // Called by TinyUSB when a complete Ethernet frame arrives from the host.
 bool tud_network_recv_cb(const uint8_t *src, uint16_t size)
 {
-    // Ignore all traffic until ATTACKMODE HID RNDIS activates RNDIS
-    if (!s_rndis_enabled) {
-        tud_network_recv_renew();
-        return true;
-    }
-
+    // DHCP is always processed so the host gets an IP as soon as the device connects.
+    // The lwIP netif (and thus the HTTP server) is only registered after ATTACKMODE HID RNDIS.
+    // Non-DHCP frames are dropped until the netif is registered (s_netif_added).
     if (size < (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip4_hdr_t) + sizeof(udp_hdr_t))) {
         tud_network_recv_renew();
         return true;
@@ -766,7 +763,10 @@ void usb_hid_wait_mounted(uint32_t timeout_ms)
 
 bool usb_net_is_connected(void)
 {
-    return s_net_connected;
+    // Both conditions must be true:
+    // 1. Host completed DHCP (has an IP)
+    // 2. lwIP netif is registered (HTTP server accessible via RNDIS)
+    return s_net_connected && s_netif_added;
 }
 
 // ============================================================
