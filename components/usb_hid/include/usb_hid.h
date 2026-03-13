@@ -37,6 +37,10 @@ void usb_hid_mouse_move(int8_t x, int8_t y);
 void usb_hid_mouse_click(uint8_t buttons);
 void usb_hid_mouse_scroll(int8_t amount);
 
-// USB Network (RNDIS) – ATTACKMODE STORAGE
+// USB Network (RNDIS) – ATTACKMODE HID RNDIS
+// Enable RNDIS network interface (called by DuckyScript ATTACKMODE HID RNDIS).
+// RNDIS is inactive by default; the device presents as HID-only until this is called.
+esp_err_t usb_hid_enable_rndis(void);
+
 // Returns true once the USB host obtained an IP via DHCP and the network is ready
 bool usb_net_is_connected(void);

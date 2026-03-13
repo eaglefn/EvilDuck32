@@ -444,46 +444,55 @@ static esp_err_t execute_command(const command_t *cmd) {
     }
 
     // ── ATTACKMODE ──────────────────────────────────────────
-    // ATTACKMODE HID           – default keyboard mode (no-op, already active)
-    // ATTACKMODE RNDIS [ms]    – wait until USB Ethernet (RNDIS) host is connected
-    //                            Default timeout: 30 000 ms
+    // Bash Bunny-style: payload declares which interfaces it needs.
+    //
+    // ATTACKMODE HID              – HID-only (default, no-op)
+    // ATTACKMODE RNDIS [ms]       – enable RNDIS + wait for host connection
+    // ATTACKMODE HID RNDIS [ms]   – enable RNDIS + wait for host connection
+    //
+    // Default timeout: 30 000 ms (0 = wait forever)
     if (strcmp(cmd->cmd, "attackmode") == 0) {
-        if (cmd->arg_count >= 1) {
+        bool want_rndis = false;
+        uint32_t timeout_ms = 30000;
+
+        // Scan all arguments: collect mode flags and optional numeric timeout
+        for (int i = 0; i < cmd->arg_count; i++) {
             char up[32];
-            to_upper_copy(cmd->args[0], up, sizeof(up));
-
+            to_upper_copy(cmd->args[i], up, sizeof(up));
             if (strcmp(up, "RNDIS") == 0) {
-                uint32_t timeout_ms = 30000;
-                if (cmd->arg_count >= 2) timeout_ms = (uint32_t)atoi(cmd->args[1]);
+                want_rndis = true;
+            } else if (strcmp(up, "HID") == 0) {
+                // HID is always active – no action needed
+            } else {
+                // Treat numeric arguments as timeout value
+                int val = atoi(cmd->args[i]);
+                if (val > 0) timeout_ms = (uint32_t)val;
+            }
+        }
 
-                ESP_LOGI(TAG, "ATTACKMODE RNDIS – waiting for host (timeout %lu ms)",
-                         (unsigned long)timeout_ms);
-                led_set_color(0, 0, 50); // blue = waiting for RNDIS
+        if (want_rndis) {
+            ESP_LOGI(TAG, "ATTACKMODE HID RNDIS – enabling RNDIS (timeout %lu ms)",
+                     (unsigned long)timeout_ms);
+            usb_hid_enable_rndis();
+            led_set_color(0, 0, 50); // blue = waiting for host
 
-                uint32_t elapsed = 0;
-                const uint32_t step = 500;
-                while (!usb_net_is_connected()) {
-                    if (timeout_ms > 0 && elapsed >= timeout_ms) {
-                        ESP_LOGW(TAG, "ATTACKMODE RNDIS: timeout");
-                        led_set_color(50, 0, 0); // red = failed
-                        return ESP_ERR_TIMEOUT;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(step));
-                    elapsed += step;
+            uint32_t elapsed = 0;
+            const uint32_t step = 500;
+            while (!usb_net_is_connected()) {
+                if (timeout_ms > 0 && elapsed >= timeout_ms) {
+                    ESP_LOGW(TAG, "ATTACKMODE RNDIS: timeout after %lu ms", (unsigned long)elapsed);
+                    led_set_color(50, 0, 0); // red = failed
+                    return ESP_ERR_TIMEOUT;
                 }
-
-                ESP_LOGI(TAG, "ATTACKMODE RNDIS: host connected after %lu ms",
-                         (unsigned long)elapsed);
-                led_set_color(0, 50, 0); // green = ready
-                return ESP_OK;
+                vTaskDelay(pdMS_TO_TICKS(step));
+                elapsed += step;
             }
 
-            if (strcmp(up, "HID") == 0) {
-                ESP_LOGI(TAG, "ATTACKMODE HID – already active");
-                return ESP_OK;
-            }
-
-            ESP_LOGW(TAG, "ATTACKMODE: unknown mode '%s'", up);
+            ESP_LOGI(TAG, "ATTACKMODE RNDIS: host connected after %lu ms",
+                     (unsigned long)elapsed);
+            led_set_color(0, 50, 0); // green = ready
+        } else {
+            ESP_LOGI(TAG, "ATTACKMODE HID – already active");
         }
         return ESP_OK;
     }

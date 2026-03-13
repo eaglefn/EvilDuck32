@@ -56,6 +56,7 @@ uint8_t tud_network_mac_address[6] = {0x02, 0x02, 0x84, 0x6A, 0x96, 0x00};
 static struct netif    s_usb_netif;
 static bool            s_netif_added    = false;
 static volatile bool   s_net_connected  = false;  // true after DHCP ACK sent
+static volatile bool   s_rndis_enabled  = false;  // true after ATTACKMODE HID RNDIS
 
 // TX queue: lwIP (tcpip_task) → TinyUSB task
 // Queue contains pool indices (uint8_t) only – avoids copying 1.5 KB per item onto stack
@@ -418,6 +419,12 @@ static void dhcp_send_reply(const uint8_t *caller_frame, uint16_t frame_len, uin
 // Called by TinyUSB when a complete Ethernet frame arrives from the host.
 bool tud_network_recv_cb(const uint8_t *src, uint16_t size)
 {
+    // Ignore all traffic until ATTACKMODE HID RNDIS activates RNDIS
+    if (!s_rndis_enabled) {
+        tud_network_recv_renew();
+        return true;
+    }
+
     if (size < (uint16_t)(sizeof(eth_hdr_t) + sizeof(ip4_hdr_t) + sizeof(udp_hdr_t))) {
         tud_network_recv_renew();
         return true;
@@ -485,9 +492,9 @@ uint16_t tud_network_xmit_cb(uint8_t *dst, void *ref, uint16_t arg)
 void tud_network_init_cb(void)
 {
     ESP_LOGI(TAG, "RNDIS: host initialized network interface");
-    // Post netif_add to tcpip_task where it's safe to call lwIP APIs.
-    // tcpip_callback enqueues the work even before tcpip_task is running.
-    if (!s_netif_added) {
+    // Register lwIP netif only after ATTACKMODE HID RNDIS has been called.
+    // This keeps the device functionally HID-only until the script requests RNDIS.
+    if (s_rndis_enabled && !s_netif_added) {
         tcpip_callback(usb_netif_add_in_tcpip, NULL);
     }
 }
@@ -706,10 +713,8 @@ esp_err_t usb_hid_init(void)
         return ESP_FAIL;
     }
 
-    // Register USB netif with lwIP now (tcpip_task is running after esp_netif_init()).
-    // Doing this here – not lazily in tud_network_init_cb – ensures ARP/TCP packets
-    // from the host are forwarded to lwIP as soon as DHCP completes.
-    tcpip_callback(usb_netif_add_in_tcpip, NULL);
+    // Do NOT register RNDIS netif here – RNDIS is disabled until ATTACKMODE HID RNDIS.
+    // Call usb_hid_enable_rndis() from DuckyScript to activate network functionality.
 
     // TinyUSB task at priority 5 (lwIP tcpip_task usually at 18, HID typing at 1)
     BaseType_t task_ret = xTaskCreate(tusb_device_task, "tusb", 10240, NULL, 5, NULL);
@@ -718,7 +723,23 @@ esp_err_t usb_hid_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "USB HID+RNDIS ready – plug into host");
+    ESP_LOGI(TAG, "USB HID ready (RNDIS inactive until ATTACKMODE HID RNDIS)");
+    return ESP_OK;
+}
+
+esp_err_t usb_hid_enable_rndis(void)
+{
+    if (s_rndis_enabled) return ESP_OK;  // already active
+
+    ESP_LOGI(TAG, "RNDIS: enabling network interface");
+    s_rndis_enabled = true;
+
+    // If the host already initialized RNDIS before we enabled it, register netif now.
+    // Otherwise tud_network_init_cb() will do it on the next host init.
+    if (!s_netif_added) {
+        tcpip_callback(usb_netif_add_in_tcpip, NULL);
+    }
+
     return ESP_OK;
 }
 

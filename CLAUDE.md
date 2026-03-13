@@ -95,7 +95,7 @@ esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl, 1);
 **Lösung:** `locale_t` → `hid_locale_t` umbenannt, `locale.h` → `hid_locale.h`
 
 ### USB HID Stub
-**Aktueller Status:** `usb_hid.c` enthält nur Logging-STUBs. Echte HID-Implementierung steht noch aus.
+**Aktueller Status:** Vollständig implementiert – Composite HID + RNDIS. RNDIS ist standardmäßig inaktiv (siehe ATTACKMODE-Philosophie).
 
 ---
 
@@ -104,9 +104,35 @@ esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl, 1);
 Unterstützte Befehle (siehe `components/duckyscript/duckyscript.c`):
 - `REM`, `DELAY`, `DEFAULT_DELAY`, `STRING`, `ENTER`
 - `GUI`, `CTRL`, `ALT`, `SHIFT`, `SPACE`, `TAB`, `ESC`
-- `ATTACKMODE` (Platzhalter, TODO)
+- `LOCALE`, `LED`, `VAR`, `REPEAT`, `KEYCODE`
+- `ATTACKMODE` (siehe unten)
 
-Skripte von SD-Karte: `/sdcard/payloads/*.txt`
+Skripte aus NVS (primär) oder SD-Karte `/sdcard/payloads/*.txt` (Fallback)
+
+### ATTACKMODE – Bash Bunny Philosophie
+
+Das Gerät startet standardmäßig als **reines HID-Gerät** (Tastatur). RNDIS (USB-Ethernet) ist
+erst aktiv, wenn das Script es explizit anfordert – analog zum Bash Bunny.
+
+| Befehl | Verhalten |
+|--------|-----------|
+| `ATTACKMODE HID` | No-op – HID ist immer aktiv |
+| `ATTACKMODE RNDIS [timeout_ms]` | RNDIS aktivieren + warten bis Host verbunden |
+| `ATTACKMODE HID RNDIS [timeout_ms]` | Wie oben (explizite Bash Bunny-Syntax) |
+
+**Technische Details:**
+- USB-Descriptor enthält immer beide Interfaces (HID + RNDIS) – kein USB-Reconnect nötig
+- RNDIS-Netzwerk-Interface (lwIP) wird erst nach `ATTACKMODE ... RNDIS` registriert
+- Standard-Timeout: 30 000 ms (0 = unbegrenzt warten)
+- LED-Feedback: Blau = wartet, Grün = verbunden, Rot = Timeout
+
+**Beispiel-Script:**
+```
+ATTACKMODE HID RNDIS 15000
+DELAY 2000
+STRING powershell -c "..."
+ENTER
+```
 
 ---
 
