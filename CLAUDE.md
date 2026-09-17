@@ -178,6 +178,43 @@ erfordert immer ein Re-Enumerate, also praktisch einen Reset).
 
 ---
 
+## OTA Firmware-Update (Web-UI) – implementiert (Stand 2026-09-17)
+
+Die Web-UI hat einen "Firmware Update"-Bereich (Datei-Upload + "Upload & Reboot"-Button,
+`components/webserver/webserver.c` HTML/JS `uploadFirmware()`), der die `.bin`-Datei per
+`multipart/form-data` an `POST /api/update` schickt. Der Server-Endpunkt ist voll
+implementiert (`handle_api_update_stream()` in `webserver.c`).
+
+**Architektur:**
+- `partitions.csv` hat jetzt `ota_0`/`ota_1` (je 4 MB) + `otadata` statt der einzelnen
+  `factory`-Partition. War ein Breaking Change am Partition-Layout – bereits geflasht,
+  inkl. dem dafür nötigen Full-Chip-Erase.
+- `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` in `sdkconfig.evilduck32`: bootet die neue
+  Firmware nicht durch, rollt der Bootloader automatisch auf den vorherigen Slot zurück.
+  Dafür markiert `app_main()` (`src/app_main.c`, Ende der Boot-Sequenz) den aktuellen Slot
+  per `esp_ota_mark_app_valid_cancel_rollback()` als gültig, sobald der Bootvorgang normal
+  durchgelaufen ist.
+- `handle_client()` (`webserver.c`) fängt `POST /api/update` ab, **bevor** der generische
+  16-KB-Static-Buffer versucht den kompletten Body zu puffern (der reicht nicht für eine
+  ~1,3-MB-Firmware-Datei). `handle_api_update_stream()` liest den Rest des Sockets danach
+  selbst in 2-KB-Chunks (`OTA_RECV_CHUNK`) und schreibt sie direkt per `esp_ota_write()` in
+  die inaktive OTA-Partition (`esp_ota_get_next_update_partition()`).
+- Die abschließende Multipart-Boundary-Markierung (`\r\n--<boundary>--\r\n`) darf nicht mit
+  in die Firmware geschrieben werden. Da der Body nie komplett im Speicher liegt, hält
+  `ota_stream_feed()` immer ein kleines Fenster (Boundary-Länge + 4 Byte, `OTA_TAIL_MAX`)
+  der zuletzt empfangenen Bytes zurück und schreibt nur ältere Bytes weg – am Ende steht die
+  Boundary-Markierung in diesem Fenster und wird dort erkannt/abgeschnitten statt geflasht.
+- Ablauf: `esp_ota_begin()` → gestreamtes `esp_ota_write()` → `esp_ota_end()` (validiert
+  Image-Header/Checksumme) → `esp_ota_set_boot_partition()` → Response senden → 1s warten
+  (damit die Antwort den Client noch erreicht) → `esp_restart()`.
+
+**Wichtige Dateien:**
+- `partitions.csv` – `ota_0`/`ota_1`/`otadata` statt `factory`
+- `components/webserver/webserver.c` – `handle_api_update_stream()`, `ota_stream_feed()`
+- `src/app_main.c` – `esp_ota_mark_app_valid_cancel_rollback()`
+
+---
+
 ## DuckyScript-Interpreter
 
 Unterstützte Befehle (siehe `components/duckyscript/duckyscript.c`):
@@ -231,13 +268,15 @@ Aktivierte Schriftarten: Montserrat 14, 18, 20 (siehe `sdkconfig.evilduck32`)
 ## Speicher & Partitionen
 
 **Flash-Speicher:** 16 MB (genug für Firmware + Skripte + zukünftige Features)
-- Firmware: ~0.5 MB (aktuelle Größe)
-- Frei: ~15+ MB
+- Firmware: ~1,3 MB (aktuelle Größe)
+- Frei: ~6,9 MB (ungenutzt hinter `storage`)
 
-**Partition Table (partitions.csv):**
+**Partition Table (partitions.csv):** – seit OTA-Implementierung zwei App-Slots statt
+einer einzelnen `factory`-Partition (siehe [OTA Firmware-Update](#ota-firmware-update-web-ui--implementiert-stand-2026-09-17))
 - `nvs`: 24 KB (Non-Volatile Storage für Einstellungen)
+- `otadata`: 8 KB (aktiver OTA-Slot, von `esp_ota_set_boot_partition()` verwaltet)
 - `phy_init`: 4 KB (PHY-Initialisierungsdaten)
-- `factory`: 4 MB (Anwendung)
+- `ota_0` / `ota_1`: je 4 MB (zwei App-Slots, Firmware-Updates wechseln zwischen beiden)
 - `storage`: 1 MB FAT (SD-Card-emuliertes Dateisystem im Flash)
 
 **Hinweis:** Die SD-Card wird in `storage`-Partition gemountet (nicht physikalische SD)

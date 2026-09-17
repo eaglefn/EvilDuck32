@@ -7,6 +7,7 @@
 #include "script_storage.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_ota_ops.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -1096,6 +1097,206 @@ static void handle_loot_upload(int sock, const char *headers_raw,
     }
 }
 
+// ===== OTA Firmware Update ===== //
+// POST /api/update  – multipart/form-data upload of firmware.bin, flashed into the
+// inactive OTA slot and booted on success.
+//
+// Unlike every other upload endpoint, the body here (~1-2 MB) can't be buffered whole
+// in the 16 KB request buffer used elsewhere, so handle_client() hands this request off
+// before it tries to. This handler reads the rest of the socket itself and streams each
+// chunk straight into esp_ota_write(), never holding more than a couple KB in memory.
+//
+// The one complication: multipart bodies end with "\r\n--<boundary>--\r\n" *after* the
+// file bytes, and that marker must never be written into the flash image. Since we don't
+// have the whole body in memory to trim it after the fact, we instead always hold back
+// the last `window_len` bytes we've seen (exactly enough to contain the marker) and only
+// pass older bytes to esp_ota_write() – whatever is left in that trailing window once the
+// socket is drained is where the marker actually lives.
+#define OTA_RECV_CHUNK 2048
+#define OTA_TAIL_MAX   160
+
+typedef struct {
+    esp_ota_handle_t handle;
+    size_t  window_len;
+    uint8_t tail[OTA_TAIL_MAX];
+    size_t  tail_len;
+} ota_stream_t;
+
+static esp_err_t ota_stream_feed(ota_stream_t *s, const uint8_t *data, size_t data_len)
+{
+    static uint8_t combined[OTA_RECV_CHUNK + OTA_TAIL_MAX];
+
+    while (data_len > 0) {
+        size_t chunk = data_len > OTA_RECV_CHUNK ? OTA_RECV_CHUNK : data_len;
+
+        memcpy(combined, s->tail, s->tail_len);
+        memcpy(combined + s->tail_len, data, chunk);
+        size_t total = s->tail_len + chunk;
+
+        if (total <= s->window_len) {
+            memcpy(s->tail, combined, total);
+            s->tail_len = total;
+        } else {
+            size_t flush_len = total - s->window_len;
+            esp_err_t err = esp_ota_write(s->handle, combined, flush_len);
+            if (err != ESP_OK) return err;
+            memcpy(s->tail, combined + flush_len, s->window_len);
+            s->tail_len = s->window_len;
+        }
+
+        data += chunk;
+        data_len -= chunk;
+    }
+    return ESP_OK;
+}
+
+// `buffer`/`buf_len` are the raw request bytes handle_client() already read (headers plus
+// however much of the body arrived in that first recv()); `body_offset` is where the HTTP
+// body starts within it and `content_length` is the full body size from the Content-Length
+// header.
+static void handle_api_update_stream(int sock, char *buffer, int buf_len,
+                                      int body_offset, int content_length)
+{
+    if (content_length <= 0) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"No content\"}");
+        return;
+    }
+
+    const char *ct = strstr(buffer, "\r\nContent-Type: multipart/form-data");
+    const char *boundary_field = ct ? strstr(ct, "boundary=") : NULL;
+    if (!boundary_field || boundary_field > buffer + body_offset) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"Expected multipart/form-data\"}");
+        return;
+    }
+    boundary_field += 9; // skip "boundary="
+
+    char boundary[96];
+    int blen = 0;
+    while (boundary_field[blen] != '\r' && boundary_field[blen] != '\n' &&
+           boundary_field[blen] != '\0' && blen < (int)sizeof(boundary) - 1) {
+        boundary[blen] = boundary_field[blen];
+        blen++;
+    }
+    boundary[blen] = '\0';
+
+    if (!strstr(buffer + body_offset, "filename=\"")) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"No file part\"}");
+        return;
+    }
+    char *part_body = strstr(buffer + body_offset, "\r\n\r\n");
+    if (!part_body) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"No file part\"}");
+        return;
+    }
+    part_body += 4;
+    int already_have = buf_len - (int)(part_body - buffer); // firmware bytes already read
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"No OTA partition\"}");
+        return;
+    }
+
+    static ota_stream_t s;
+    s.tail_len = 0;
+    s.window_len = strlen(boundary) + 4; // "\r\n--" + boundary
+    if (s.window_len > OTA_TAIL_MAX) s.window_len = OTA_TAIL_MAX;
+
+    esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &s.handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"OTA begin failed\"}");
+        return;
+    }
+    ESP_LOGI(TAG, "OTA update starting -> %s", update_partition->label);
+
+    bool failed = false;
+    if (already_have > 0 && ota_stream_feed(&s, (const uint8_t *)part_body, (size_t)already_have) != ESP_OK) {
+        failed = true;
+    }
+
+    int body_consumed = buf_len - body_offset;
+    static uint8_t recv_buf[OTA_RECV_CHUNK];
+    while (!failed && body_consumed < content_length) {
+        int to_read = content_length - body_consumed;
+        if (to_read > (int)sizeof(recv_buf)) to_read = sizeof(recv_buf);
+        int n = recv(sock, recv_buf, to_read, 0);
+        if (n <= 0) {
+            ESP_LOGE(TAG, "OTA: connection closed early (%d/%d bytes)", body_consumed, content_length);
+            failed = true;
+            break;
+        }
+        body_consumed += n;
+        if (ota_stream_feed(&s, recv_buf, (size_t)n) != ESP_OK) failed = true;
+    }
+
+    if (failed) {
+        esp_ota_abort(s.handle);
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"Upload failed\"}");
+        return;
+    }
+
+    // Everything still held back in the tail window is the tail of the firmware plus the
+    // closing multipart marker - find where the marker starts and keep only what precedes it.
+    char marker[OTA_TAIL_MAX];
+    int marker_len = snprintf(marker, sizeof(marker), "\r\n--%s", boundary);
+    uint8_t *found = NULL;
+    if (marker_len > 0 && (size_t)marker_len <= s.tail_len) {
+        for (size_t i = 0; i + (size_t)marker_len <= s.tail_len; i++) {
+            if (memcmp(s.tail + i, marker, marker_len) == 0) {
+                found = s.tail + i;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        ESP_LOGE(TAG, "OTA: closing multipart boundary not found");
+        esp_ota_abort(s.handle);
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"Malformed upload\"}");
+        return;
+    }
+
+    size_t final_len = (size_t)(found - s.tail);
+    if (final_len > 0) {
+        err = esp_ota_write(s.handle, s.tail, final_len);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write (final) failed: %s", esp_err_to_name(err));
+            esp_ota_abort(s.handle);
+            send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                          "{\"error\":\"OTA write failed\"}");
+            return;
+        }
+    }
+
+    err = esp_ota_end(s.handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"Invalid firmware image\"}");
+        return;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"Failed to set boot partition\"}");
+        return;
+    }
+
+    ESP_LOGI(TAG, "OTA update complete -> %s, rebooting", update_partition->label);
+    send_response(sock, "HTTP/1.1 200 OK", "application/json", "{\"status\":\"ok\",\"rebooting\":true}");
+
+    // Give the response time to actually reach the client before the socket disappears
+    // out from under it.
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
 // ===== Settings API Handlers ===== //
 static void handle_api_settings_get(int sock) {
     char json_buf[512];
@@ -1359,20 +1560,43 @@ static void handle_client(int sock) {
     }
     buffer[len] = '\0';
 
-    // If there is a body, ensure we receive it completely (Content-Length based)
     char *hdr_end = strstr(buffer, "\r\n\r\n");
-    if (hdr_end) {
-        int body_offset = (int)(hdr_end + 4 - buffer);
-        int body_received = len - body_offset;
+    int body_offset = hdr_end ? (int)(hdr_end + 4 - buffer) : -1;
 
-        // Parse Content-Length header (case-sensitive, standard casing)
-        int content_length = 0;
-        const char *cl = strstr(buffer, "\r\nContent-Length: ");
-        if (cl) {
-            content_length = atoi(cl + 18); // 18 = strlen("\r\nContent-Length: ")
+    // Parse Content-Length header (case-sensitive, standard casing)
+    int content_length = 0;
+    const char *cl = strstr(buffer, "\r\nContent-Length: ");
+    if (cl) {
+        content_length = atoi(cl + 18); // 18 = strlen("\r\nContent-Length: ")
+    }
+
+    // Parse the request line before buffering any body - /api/update needs to take
+    // over the socket itself instead of being buffered whole (see below).
+    char method[16], path[256], version[16];
+    int parsed = sscanf(buffer, "%15s %255s %15s", method, path, version);
+    if (parsed < 2) {
+        ESP_LOGE(TAG, "Failed to parse request: %s", buffer);
+        send_response(sock, "HTTP/1.1 400 Bad Request", "text/html", "<h1>400 Bad Request</h1>");
+        close(sock);
+        return;
+    }
+    ESP_LOGI(TAG, "Parsed: method='%s', path='%s'", method, path);
+
+    // Firmware uploads (~1-2 MB) don't fit in the 16 KB request buffer below, so this
+    // path is handled separately before that buffer fills up - see handle_api_update_stream().
+    if (strcmp(path, "/api/update") == 0 && strcmp(method, "POST") == 0) {
+        if (body_offset < 0) {
+            send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"No body\"}");
+        } else {
+            handle_api_update_stream(sock, buffer, len, body_offset, content_length);
         }
+        close(sock);
+        return;
+    }
 
-        // Loop recv() until we have all body bytes
+    // Every other route: buffer the whole body (Content-Length based) before routing.
+    if (hdr_end) {
+        int body_received = len - body_offset;
         while (body_received < content_length && len < (int)(sizeof(buffer) - 1)) {
             int to_read = content_length - body_received;
             int space   = (int)(sizeof(buffer) - 1 - len);
@@ -1386,17 +1610,6 @@ static void handle_client(int sock) {
     }
 
     ESP_LOGD(TAG, "Request: %.80s", buffer); // Debug only, truncated
-
-    // Parse HTTP request line more carefully
-    char method[16], path[256], version[16];
-    int parsed = sscanf(buffer, "%15s %255s %15s", method, path, version);
-    if (parsed < 2) {
-        ESP_LOGE(TAG, "Failed to parse request: %s", buffer);
-        send_response(sock, "HTTP/1.1 400 Bad Request", "text/html", "<h1>400 Bad Request</h1>");
-        close(sock);
-        return;
-    }
-    ESP_LOGI(TAG, "Parsed: method='%s', path='%s'", method, path);
 
     // Route handling
     // All SPA pages serve the same spa_html. Every known section path is listed here
@@ -1499,8 +1712,9 @@ static void handle_client(int sock) {
         handle_payload_download(sock, path + 9);
     }
     else if (strcmp(path, "/api/update") == 0) {
-        // TODO: Handle OTA update
-        send_response(sock, "HTTP/1.1 501 Not Implemented", "application/json", "{\"error\":\"Not implemented\"}");
+        // POST is intercepted earlier in this function, before the body-buffering
+        // step above - anything reaching here used the wrong method.
+        send_response(sock, "HTTP/1.1 405 Method Not Allowed", "application/json", "{\"error\":\"Method not allowed\"}");
     }
     else {
         send_response(sock, "HTTP/1.1 404 Not Found", "text/html", "<h1>404 Not Found</h1>");

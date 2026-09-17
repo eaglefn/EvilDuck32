@@ -3,6 +3,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -223,6 +224,12 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
     ESP_LOGI(TAG, "=== EvilDuck32 Ready ===");
+
+    // Boot reached the normal operating state without a crash - confirm this OTA
+    // slot as valid so the bootloader won't auto-rollback to the previous one on
+    // the next reset. No-op (returns ESP_ERR_INVALID_STATE, ignored) when rollback
+    // confirmation isn't pending, e.g. on a plain USB-cable flash.
+    esp_ota_mark_app_valid_cancel_rollback();
 
     bool autorun_triggered = false;
 
