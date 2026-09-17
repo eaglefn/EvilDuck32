@@ -11,6 +11,12 @@
 // Initialize USB HID (installs TinyUSB driver, starts USB enumeration)
 esp_err_t usb_hid_init(void);
 
+// Initialize TinyUSB in Storage/ARMING mode: MSC-only descriptor, no HID/RNDIS.
+// Used instead of usb_hid_init() when GPIO0 is held at power-on (see components/usb_storage).
+// Mutually exclusive with usb_hid_init() for the lifetime of the boot - the mode is fixed
+// at enumeration time and switching requires a reset.
+esp_err_t usb_hid_init_storage_mode(void);
+
 // Returns true when the USB host has enumerated and mounted the device
 bool usb_hid_is_mounted(void);
 

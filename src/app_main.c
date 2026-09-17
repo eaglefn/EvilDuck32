@@ -15,6 +15,7 @@
 #include "webserver.h"
 #include "settings.h"
 #include "script_storage.h"
+#include "storage_mode.h"
 
 static const char *TAG = "EvilDuck32";
 
@@ -122,6 +123,18 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     ESP_LOGI(TAG, "NVS initialized");
 
+    // LED must be up before storage_mode_requested() so it can blink feedback
+    // while polling for the BOOT button (display isn't initialized yet at this point).
+    ESP_ERROR_CHECK(led_init());
+
+    // Storage/ARMING mode branches off before any HID/RNDIS/script subsystem starts -
+    // it never returns. Note: this polls GPIO0 a short while INTO a normal boot, not
+    // during the power-on/reset pulse itself - see storage_mode.c for why.
+    if (storage_mode_requested()) {
+        run_storage_mode();
+    }
+    led_set_status(LED_BOOT);
+
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // Initialize TCP/IP stack early so tcpip_task is running before USB enumerates.
@@ -145,10 +158,6 @@ void app_main(void)
         ESP_LOGE(TAG, "Settings init failed: %s", esp_err_to_name(ret));
     }
 
-    // Phase 1: Hardware init
-    ESP_ERROR_CHECK(led_init());
-    led_set_status(LED_BOOT);
-
     // Initialize USB HID FIRST (before SD-Card to avoid pin conflicts)
     ret = usb_hid_init();
     if (ret != ESP_OK) {
@@ -166,7 +175,7 @@ void app_main(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
     lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "EvilDuck32 v1.0.0");
+    lv_label_set_text(title, "EvilDuck32 v1.1.0");
     lv_obj_set_style_text_color(title, lv_color_hex(0x0000FF), 0);
     lv_obj_set_style_text_font(title, LV_FONT_DEFAULT, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
@@ -174,9 +183,11 @@ void app_main(void)
     status_label = lv_label_create(scr);
     lv_obj_set_style_text_color(status_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(status_label, LV_FONT_DEFAULT, 0);
-    lv_obj_align(status_label, LV_ALIGN_TOP_LEFT, 5, 30);
     lv_obj_set_width(status_label, LCD_WIDTH - 10);
     lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+    // Blank line's worth of gap below the title, matching the Arming Mode screen
+    // (see storage_mode.c) instead of sitting right under it.
+    lv_obj_align_to(status_label, title, LV_ALIGN_OUT_BOTTOM_MID, 0, 24);
 
     update_status_screen();
 

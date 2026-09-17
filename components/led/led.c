@@ -49,6 +49,7 @@ void led_set_status(led_status_t status)
         case LED_ERROR:          led_set_color(255, 0, 0);     break;
         case LED_BLE_CONNECTED:  led_set_color(0, 255, 255);   break;
         case LED_WIFI_ACTIVE:    led_set_color(128, 0, 255);   break;
+        case LED_STORAGE_MODE:   led_set_color(0, 0, 255);     break;
     }
 }
 

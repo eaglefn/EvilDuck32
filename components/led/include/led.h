@@ -13,6 +13,7 @@ typedef enum {
     LED_ERROR,
     LED_BLE_CONNECTED,
     LED_WIFI_ACTIVE,
+    LED_STORAGE_MODE,
 } led_status_t;
 
 esp_err_t led_init(void);

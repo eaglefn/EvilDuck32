@@ -20,6 +20,11 @@
 
 static const char *TAG = "usb_hid";
 
+// true while the TinyUSB stack is enumerated for the Storage/ARMING boot mode
+// (MSC-only descriptor). Set once at boot via usb_hid_init_storage_mode() and
+// never toggled at runtime - switching modes requires a reset/re-enumeration.
+static bool s_storage_mode = false;
+
 // ============================================================
 // Keyboard configuration
 // ============================================================
@@ -141,18 +146,68 @@ static const uint8_t s_config_desc[] = {
 };
 
 // ============================================================
+// Storage/ARMING mode descriptors (MSC only, no HID/RNDIS)
+// Selected entirely at boot via usb_hid_init_storage_mode() - see s_storage_mode.
+// The device re-enumerates as a plain USB mass-storage drive; the SD card is
+// passed through raw block-for-block by components/usb_storage (tud_msc_* callbacks).
+// ============================================================
+
+static const tusb_desc_device_t s_device_desc_storage = {
+    .bLength            = sizeof(tusb_desc_device_t),
+    .bDescriptorType    = TUSB_DESC_DEVICE,
+    .bcdUSB             = 0x0200,
+    .bDeviceClass       = 0x00,   // class defined at interface level (MSC)
+    .bDeviceSubClass    = 0x00,
+    .bDeviceProtocol    = 0x00,
+    .bMaxPacketSize0    = CFG_TUD_ENDPOINT0_SIZE,
+    .idVendor           = 0x046D,
+    .idProduct          = 0xC31D,  // distinct PID from HID/RNDIS mode (0xC31C)
+    .bcdDevice          = 0x0200,
+    .iManufacturer      = 1,
+    .iProduct           = 2,
+    .iSerialNumber      = 3,
+    .bNumConfigurations = 1,
+};
+
+static const char *s_string_desc_storage[] = {
+    (char[]){0x09, 0x04},     // 0: Language = English (US)
+    "EvilDuck32",              // 1: Manufacturer
+    "EvilDuck32 Storage",      // 2: Product
+    "0000000002",              // 3: Serial number
+    NULL
+};
+
+enum {
+    ITF_NUM_MSC_STORAGE = 0,
+    ITF_NUM_STORAGE_TOTAL
+};
+
+#define EPNUM_MSC_OUT  0x01   // EP1 OUT – MSC bulk
+#define EPNUM_MSC_IN   0x81   // EP1 IN  – MSC bulk
+
+#define CONFIG_TOTAL_LEN_STORAGE (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN)
+
+static const uint8_t s_config_desc_storage[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_STORAGE_TOTAL, 0, CONFIG_TOTAL_LEN_STORAGE,
+                          0x00, 100),
+    TUD_MSC_DESCRIPTOR(ITF_NUM_MSC_STORAGE, 0,
+                       EPNUM_MSC_OUT, EPNUM_MSC_IN, CFG_TUD_MSC_EP_BUFSIZE),
+};
+
+// ============================================================
 // TinyUSB Descriptor Callbacks
 // ============================================================
 
 uint8_t const *tud_descriptor_device_cb(void)
 {
-    return (uint8_t const *)&s_device_desc;
+    return s_storage_mode ? (uint8_t const *)&s_device_desc_storage
+                           : (uint8_t const *)&s_device_desc;
 }
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 {
     (void)index;
-    return s_config_desc;
+    return s_storage_mode ? s_config_desc_storage : s_config_desc;
 }
 
 static uint16_t s_str_buf[32];
@@ -162,13 +217,16 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
     (void)langid;
     uint8_t chr_count;
 
+    const char **table      = s_storage_mode ? s_string_desc_storage : s_string_desc;
+    size_t       table_size = (s_storage_mode ? sizeof(s_string_desc_storage)
+                                               : sizeof(s_string_desc)) / sizeof(char *) - 1;
+
     if (index == 0) {
-        s_str_buf[1] = ((uint16_t)s_string_desc[0][1] << 8) | s_string_desc[0][0];
+        s_str_buf[1] = ((uint16_t)table[0][1] << 8) | table[0][0];
         chr_count = 1;
     } else {
-        size_t table_size = (sizeof(s_string_desc) / sizeof(s_string_desc[0])) - 1;
         if (index >= table_size) return NULL;
-        const char *str = s_string_desc[index];
+        const char *str = table[index];
         chr_count = (uint8_t)strlen(str);
         if (chr_count > 31) chr_count = 31;
         for (uint8_t i = 0; i < chr_count; i++) s_str_buf[1 + i] = str[i];
@@ -584,6 +642,9 @@ static void tusb_device_task(void *arg)
     while (1) {
         tud_task();
 
+        // Storage/ARMING mode has no HID/RNDIS interfaces - nothing to drain.
+        if (s_storage_mode) continue;
+
         // Drain one pending HID report per iteration
         if (s_kb_queue && tud_hid_ready()) {
             kb_report_t r;
@@ -721,6 +782,43 @@ esp_err_t usb_hid_init(void)
     }
 
     ESP_LOGI(TAG, "USB HID ready (RNDIS inactive until ATTACKMODE HID RNDIS)");
+    return ESP_OK;
+}
+
+esp_err_t usb_hid_init_storage_mode(void)
+{
+    ESP_LOGI(TAG, "Initializing USB Mass Storage (Storage/ARMING mode)");
+    s_storage_mode = true;   // must be set before tusb_init() queries the descriptors
+
+    // Switch USB MUX to OTG Device mode
+    const usb_phy_config_t phy_cfg = {
+        .controller  = USB_PHY_CTRL_OTG,
+        .target      = USB_PHY_TARGET_INT,
+        .otg_mode    = USB_OTG_MODE_DEVICE,
+        .otg_speed   = USB_PHY_SPEED_FULL,
+    };
+    esp_err_t ret = usb_new_phy(&phy_cfg, &s_phy_hdl);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "usb_new_phy() failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    if (!tusb_init()) {
+        ESP_LOGE(TAG, "tusb_init() failed");
+        return ESP_FAIL;
+    }
+
+    // Same stack size as the normal-mode task: MSC read/write callbacks call into the
+    // SDMMC driver (sdmmc_read_sectors/write_sectors) plus ESP_LOG formatting, which
+    // together need more than a minimal stack - a too-small one here crashes the task
+    // (and with it the whole USB connection) on the first real read/write.
+    BaseType_t task_ret = xTaskCreate(tusb_device_task, "tusb_msc", 10240, NULL, 5, NULL);
+    if (task_ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create TinyUSB task");
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "USB Mass Storage ready");
     return ESP_OK;
 }
 
