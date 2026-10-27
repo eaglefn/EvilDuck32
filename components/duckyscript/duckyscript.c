@@ -4,6 +4,7 @@
 #include "sdcard.h"
 #include "script_storage.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
@@ -17,6 +18,9 @@ static const char *TAG = "DuckyScript";
 #define MAX_STRING_LENGTH 1024  // max length for STRING argument + raw line buffer
 #define MAX_ARGS 8
 #define DEFAULT_DELAY_MS 100
+
+// ── Script logging ──────────────────────────────────────────
+#define LOG_CLEANUP_THRESHOLD (512 * 1024) // 512 KB – delete old logs when free space drops below this
 
 // ── VAR support ──────────────────────────────────────────────
 // VAR $NAME = value   →  $NAME is substituted in STRING commands
@@ -42,6 +46,7 @@ static struct {
     uint32_t default_delay;
     bool stop_requested;
     bool pause_requested;
+    char run_next[64]; // set by the RUN command; script_task() chain-loads it once set
 } ctx = {
     .default_delay = DEFAULT_DELAY_MS,
     .state = DUCKY_STATE_IDLE,
@@ -284,17 +289,40 @@ static void save_last_cmd(const command_t *cmd) {
     // Copy the backing raw buffer (trimmed line that args point into)
     // We need the offsets, but we no longer have the original buffer here.
     // Instead we rebuild from cmd->cmd and cmd->args.
+    //
+    // IMPORTANT: cmd might be &s_last_cmd (when REPEAT re-executes a command that
+    // calls save_last_cmd again). In that case, cmd->cmd, cmd->args, and cmd->raw_args
+    // all point into / are embedded in s_last_cmd / s_last_cmd_buf, which we are about
+    // to overwrite or memset. So we must deep-copy EVERYTHING first.
+    //
+    // Note: these buffers are static, NOT stack locals – as locals they would be
+    // MAX_ARGS*MAX_STRING_LENGTH = 8 KB (plus raw_args 1 KB) on the stack of the
+    // 8 KB script_task, overflowing it on the very first command of any script.
+    // Only the single script_task ever calls this, so there is no re-entrancy.
+    static char cmd_copy[32];
+    static char args_copy[MAX_ARGS][MAX_STRING_LENGTH];
+    static char raw_args_copy[MAX_STRING_LENGTH];
+    int arg_count = cmd->arg_count;
+
+    strncpy(cmd_copy, cmd->cmd, sizeof(cmd_copy) - 1);
+    cmd_copy[sizeof(cmd_copy) - 1] = '\0';
+    for (int i = 0; i < arg_count; i++) {
+        strncpy(args_copy[i], cmd->args[i], MAX_STRING_LENGTH - 1);
+        args_copy[i][MAX_STRING_LENGTH - 1] = '\0';
+    }
+    memcpy(raw_args_copy, cmd->raw_args, MAX_STRING_LENGTH);
+
     memset(s_last_cmd_buf, 0, sizeof(s_last_cmd_buf));
     memset(&s_last_cmd, 0, sizeof(s_last_cmd));
-    memcpy(s_last_raw_args, cmd->raw_args, sizeof(s_last_raw_args));
+    memcpy(s_last_raw_args, raw_args_copy, sizeof(s_last_raw_args));
 
     // Write "cmd arg0 arg1 ..." into s_last_cmd_buf, then re-tokenise
     int pos = 0;
-    int len = snprintf(s_last_cmd_buf + pos, sizeof(s_last_cmd_buf) - pos, "%s", cmd->cmd);
+    int len = snprintf(s_last_cmd_buf + pos, sizeof(s_last_cmd_buf) - pos, "%s", cmd_copy);
     pos += len;
-    for (int i = 0; i < cmd->arg_count && pos < (int)sizeof(s_last_cmd_buf) - 2; i++) {
+    for (int i = 0; i < arg_count && pos < (int)sizeof(s_last_cmd_buf) - 2; i++) {
         s_last_cmd_buf[pos++] = ' ';
-        len = snprintf(s_last_cmd_buf + pos, sizeof(s_last_cmd_buf) - pos, "%s", cmd->args[i]);
+        len = snprintf(s_last_cmd_buf + pos, sizeof(s_last_cmd_buf) - pos, "%s", args_copy[i]);
         pos += len;
     }
 
@@ -321,6 +349,7 @@ static esp_err_t execute_command(const command_t *cmd) {
     if (strcmp(cmd->cmd, "delay") == 0) {
         if (cmd->arg_count < 1) return ESP_ERR_INVALID_ARG;
         vTaskDelay(pdMS_TO_TICKS(atoi(cmd->args[0])));
+        save_last_cmd(cmd);
         return ESP_OK;
     }
 
@@ -328,6 +357,7 @@ static esp_err_t execute_command(const command_t *cmd) {
     if (strcmp(cmd->cmd, "default_delay") == 0 || strcmp(cmd->cmd, "defaultdelay") == 0) {
         if (cmd->arg_count < 1) return ESP_ERR_INVALID_ARG;
         ctx.default_delay = (uint32_t)atoi(cmd->args[0]);
+        save_last_cmd(cmd);
         return ESP_OK;
     }
 
@@ -440,6 +470,20 @@ static esp_err_t execute_command(const command_t *cmd) {
             execute_command(&s_last_cmd);
             if (ctx.default_delay > 0) vTaskDelay(pdMS_TO_TICKS(ctx.default_delay));
         }
+        return ESP_OK;
+    }
+
+    // ── RUN ─────────────────────────────────────────────────
+    // RUN <filename> – chain-load another script once this line finishes. Typically
+    // placed as the last line of a script so it continues with another one
+    // without needing to be triggered again via the Web-UI. Any lines after RUN in
+    // the same file are skipped once the hand-off happens (script_task() breaks out
+    // of its read loop as soon as ctx.run_next is set).
+    if (strcmp(cmd->cmd, "run") == 0) {
+        if (cmd->arg_count < 1) return ESP_ERR_INVALID_ARG;
+        strncpy(ctx.run_next, cmd->args[0], sizeof(ctx.run_next) - 1);
+        ctx.run_next[sizeof(ctx.run_next) - 1] = '\0';
+        ESP_LOGI(TAG, "RUN: will chain to %s", ctx.run_next);
         return ESP_OK;
     }
 
@@ -570,46 +614,220 @@ static esp_err_t execute_command(const command_t *cmd) {
 // Script execution task
 // ============================================================
 
-static void script_task(void *arg) {
-    char line[MAX_STRING_LENGTH];
-    command_t cmd;
+// Static buffer for NVS-loaded scripts. Safe because only one script runs at a time.
+static char s_script_buf[MAX_SCRIPT_SIZE + 1];
 
-    ESP_LOGI(TAG, "Starting script: %s", ctx.current_file);
-    ctx.state = DUCKY_STATE_RUNNING;
-    ctx.current_line = 0;
+// Opens a script by name: NVS script storage first (primary), then SD card
+// (/sdcard/scripts/<name>, fallback). Shared by ducky_run_script() and the RUN
+// command's chain-load in script_task() - both only ever run one script at a
+// time, so reusing s_script_buf across calls is safe.
+static FILE *ducky_open_script(const char *filename) {
+    FILE *fp = NULL;
 
-    while (fgets(line, sizeof(line), ctx.current_fp)) {
-        if (ctx.stop_requested) {
-            ESP_LOGI(TAG, "Script stopped at line %d", ctx.current_line);
-            ctx.state = DUCKY_STATE_IDLE;
-            break;
-        }
+    esp_err_t ret = script_storage_load(filename, s_script_buf, sizeof(s_script_buf));
+    if (ret == ESP_OK) {
+        fp = fmemopen(s_script_buf, strlen(s_script_buf), "r");
+        if (fp) ESP_LOGI(TAG, "Running script from NVS: %s", filename);
+    }
 
-        while (ctx.pause_requested) {
-            ctx.state = DUCKY_STATE_PAUSED;
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        ctx.state = DUCKY_STATE_RUNNING;
+    if (!fp && sdcard_is_mounted()) {
+        char path[128];
+        snprintf(path, sizeof(path), "/sdcard/scripts/%s", filename);
+        fp = fopen(path, "r");
+        if (fp) ESP_LOGI(TAG, "Running script from SD: %s", path);
+    }
 
-        ctx.current_line++;
+    if (!fp) {
+        ESP_LOGE(TAG, "Script not found: %s", filename);
+    }
+    return fp;
+}
 
-        if (parse_command(line, &cmd)) {
-            esp_err_t ret = execute_command(&cmd);
-            if (ret != ESP_OK && ret != ESP_ERR_NOT_SUPPORTED) {
-                ESP_LOGE(TAG, "Error at line %d", ctx.current_line);
-            }
-        }
+// Delete old log files when free space on the SD card is low.
+// Keeps the 5 newest logs, deletes oldest first until free > 512 KB.
+// Uses heap allocation for the directory listing (too large for 8K task stack).
+static void ducky_log_cleanup(void)
+{
+    if (!sdcard_is_mounted()) return;
 
-        if (ctx.default_delay > 0) {
-            vTaskDelay(pdMS_TO_TICKS(ctx.default_delay));
+    // Calculate total card size directly (no large stack allocation needed)
+    uint64_t total = sdcard_total_bytes();
+    if (total == 0) return;
+
+    // Heap-allocate the log directory listing (~41 KB) – too large for task stack
+    sdcard_dir_list_t *list = malloc(sizeof(sdcard_dir_list_t));
+    if (!list) {
+        ESP_LOGW(TAG, "Log cleanup: malloc failed for dir list");
+        return;
+    }
+
+    if (sdcard_list_dir("logs", list) != ESP_OK) {
+        free(list);
+        return;
+    }
+
+    // Estimate free space: total minus sum of file sizes we can see
+    uint64_t used = 0;
+    for (int i = 0; i < list->count; i++) {
+        if (!list->entries[i].is_dir) used += list->entries[i].size;
+    }
+    uint64_t free_bytes = (total > used) ? (total - used) : 0;
+    if (free_bytes > LOG_CLEANUP_THRESHOLD) {
+        free(list);
+        return;
+    }
+
+    // Keep only files (skip directories)
+    int file_count = 0;
+    for (int i = 0; i < list->count; i++) {
+        if (!list->entries[i].is_dir) {
+            if (file_count != i) list->entries[file_count] = list->entries[i];
+            file_count++;
         }
     }
 
-    fclose(ctx.current_fp);
-    ctx.current_fp = NULL;
-    ctx.state = DUCKY_STATE_FINISHED;
+    // Bubble-sort by mtime (oldest first)
+    for (int i = 0; i < file_count - 1; i++) {
+        for (int j = 0; j < file_count - 1 - i; j++) {
+            if (list->entries[j].mtime > list->entries[j + 1].mtime) {
+                sdcard_file_entry_t tmp = list->entries[j];
+                list->entries[j] = list->entries[j + 1];
+                list->entries[j + 1] = tmp;
+            }
+        }
+    }
 
+    // Delete oldest until free > threshold or only 5 remain
+    for (int i = 0; i < file_count - 5; i++) {
+        char del_path[128];
+        snprintf(del_path, sizeof(del_path), "logs/%s", list->entries[i].name);
+        if (sdcard_delete_file(del_path) == ESP_OK) {
+            ESP_LOGI(TAG, "Log cleanup: deleted %s", list->entries[i].name);
+            free_bytes += list->entries[i].size;
+        }
+        if (free_bytes > LOG_CLEANUP_THRESHOLD) break;
+    }
+
+    free(list);
+}
+
+static void script_task(void *arg) {
+    char line[MAX_STRING_LENGTH];
+    command_t cmd;
+    bool stopped = false;
+
+    // Per-execution log buffer (4 KB, built in memory, written to SD at the end)
+    static char log_buf[4096];
+    int log_pos = 0;
+    uint64_t script_start_ms = 0;
+
+    // Outer loop: one iteration per script file. Runs again when a RUN command
+    // set ctx.run_next, so a chain of scripts executes within this single task
+    // instead of spawning a new one per hop.
+    for (;;) {
+        ESP_LOGI(TAG, "Starting script: %s", ctx.current_file);
+        ctx.state = DUCKY_STATE_RUNNING;
+        ctx.current_line = 0;
+        ctx.run_next[0] = '\0';
+
+        // Log header for this script (or first script in a RUN chain)
+        if (log_pos == 0) {
+            // First script in the chain – start fresh log
+            script_start_ms = esp_timer_get_time() / 1000;
+            log_pos = snprintf(log_buf, sizeof(log_buf),
+                "= EvilDuck32 Script Log =\n"
+                "Script: %s\nStart: boot +%llums\n---\n",
+                ctx.current_file, script_start_ms);
+        } else {
+            // Continuing a RUN chain – append a separator
+            script_start_ms = esp_timer_get_time() / 1000;
+            log_pos += snprintf(log_buf + log_pos, sizeof(log_buf) - log_pos,
+                "\n---\nScript: %s (RUN chain)\nStart: boot +%llums\n---\n",
+                ctx.current_file, script_start_ms);
+        }
+
+        while (fgets(line, sizeof(line), ctx.current_fp)) {
+            if (ctx.stop_requested) {
+                ESP_LOGI(TAG, "Script stopped at line %d", ctx.current_line);
+                ctx.state = DUCKY_STATE_IDLE;
+                stopped = true;
+                break;
+            }
+
+            while (ctx.pause_requested) {
+                ctx.state = DUCKY_STATE_PAUSED;
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            ctx.state = DUCKY_STATE_RUNNING;
+
+            ctx.current_line++;
+
+            if (parse_command(line, &cmd)) {
+                esp_err_t ret = execute_command(&cmd);
+                if (ret != ESP_OK && ret != ESP_ERR_NOT_SUPPORTED) {
+                    ESP_LOGE(TAG, "Error at line %d", ctx.current_line);
+                }
+
+                // Log this line to the in-memory buffer
+                if (log_pos < (int)sizeof(log_buf)) {
+                    uint64_t now = esp_timer_get_time() / 1000;
+                    // Strip trailing newline from line for clean log output
+                    char *nl = strchr(line, '\0');
+                    if (nl > line && *(nl - 1) == '\n') *(nl - 1) = '\0';
+                    log_pos += snprintf(log_buf + log_pos, sizeof(log_buf) - log_pos,
+                        "[+%05llu] LINE %4d | %s\n",
+                        now - script_start_ms, ctx.current_line, line);
+                }
+            }
+
+            if (ctx.run_next[0] != '\0') {
+                break; // RUN requested - hand off to the next script below
+            }
+
+            if (ctx.default_delay > 0) {
+                vTaskDelay(pdMS_TO_TICKS(ctx.default_delay));
+            }
+        }
+
+        fclose(ctx.current_fp);
+        ctx.current_fp = NULL;
+
+        if (stopped || ctx.run_next[0] == '\0') {
+            break;
+        }
+
+        char next[sizeof(ctx.current_file)];
+        strncpy(next, ctx.run_next, sizeof(next) - 1);
+        next[sizeof(next) - 1] = '\0';
+
+        FILE *fp = ducky_open_script(next);
+        if (!fp) {
+            break;
+        }
+        ctx.current_fp = fp;
+        strncpy(ctx.current_file, next, sizeof(ctx.current_file) - 1);
+        ctx.current_file[sizeof(ctx.current_file) - 1] = '\0';
+    }
+
+    ctx.state = DUCKY_STATE_FINISHED;
     ESP_LOGI(TAG, "Script finished: %s (%d lines)", ctx.current_file, ctx.current_line);
+
+    // Finalize and write the execution log to SD
+    if (log_pos > 0) {
+        uint64_t end_time = esp_timer_get_time() / 1000;
+        log_pos += snprintf(log_buf + log_pos, sizeof(log_buf) - log_pos,
+            "---\nEnd: boot +%llums\nStatus: %s\n",
+            end_time, stopped ? "STOPPED" : "FINISHED");
+
+        if (sdcard_is_mounted()) {
+            ducky_log_cleanup();
+            char log_path[128];
+            snprintf(log_path, sizeof(log_path), "logs/%s_%llu.log",
+                     ctx.current_file, end_time / 1000);
+            sdcard_write_file(log_path, log_buf, log_pos);
+        }
+    }
+
     vTaskDelete(NULL);
 }
 
@@ -627,34 +845,14 @@ esp_err_t ducky_init(void) {
     return ESP_OK;
 }
 
-// Static buffer for NVS-loaded scripts. Safe because only one script runs at a time.
-static char s_script_buf[MAX_SCRIPT_SIZE + 1];
-
 esp_err_t ducky_run_script(const char *filename) {
     if (ctx.state == DUCKY_STATE_RUNNING || ctx.state == DUCKY_STATE_PAUSED) {
         ESP_LOGW(TAG, "Script already running");
         return ESP_ERR_INVALID_STATE;
     }
 
-    FILE *fp = NULL;
-
-    // Primary: load from NVS script storage
-    esp_err_t ret = script_storage_load(filename, s_script_buf, sizeof(s_script_buf));
-    if (ret == ESP_OK) {
-        fp = fmemopen(s_script_buf, strlen(s_script_buf), "r");
-        if (fp) ESP_LOGI(TAG, "Running script from NVS: %s", filename);
-    }
-
-    // Fallback: SD card
-    if (!fp && sdcard_is_mounted()) {
-        char path[128];
-        snprintf(path, sizeof(path), "/sdcard/scripts/%s", filename);
-        fp = fopen(path, "r");
-        if (fp) ESP_LOGI(TAG, "Running script from SD: %s", path);
-    }
-
+    FILE *fp = ducky_open_script(filename);
     if (!fp) {
-        ESP_LOGE(TAG, "Script not found: %s", filename);
         return ESP_ERR_NOT_FOUND;
     }
 
