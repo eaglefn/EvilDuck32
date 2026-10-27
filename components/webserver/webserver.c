@@ -23,6 +23,30 @@
 #include <dirent.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <ctype.h>
+
+// URL-decode a string in-place. Converts %XX hex codes to actual bytes.
+// Returns the decoded string (same buffer).
+static char *url_decode(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || !src || dst_size == 0) return dst;
+    size_t i = 0;
+    while (*src && i < dst_size - 1) {
+        if (*src == '%' && isxdigit((unsigned char)src[1]) && isxdigit((unsigned char)src[2])) {
+            unsigned int val;
+            sscanf(src + 1, "%2x", &val);
+            dst[i++] = (char)val;
+            src += 3;
+        } else if (*src == '+') {
+            dst[i++] = ' ';
+            src++;
+        } else {
+            dst[i++] = *src++;
+        }
+    }
+    dst[i] = '\0';
+    return dst;
+}
 
 static const char *TAG = "webserver";
 
@@ -107,12 +131,13 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "table.ctbl td:first-child,table.ctbl td:nth-child(2),table.ctbl td:nth-child(3),table.ctbl td:last-child{width:auto}"
 "button{padding:12px 16px;font-size:14px}"
 "input,textarea{font-size:16px}"
-"}"
+"};"
 "</style></head><body>"
 
 /* ── Nav bar ── */
 "<div class='nav'>"
-"<a href='#' data-sec='home'     onclick=\"showSection('home');return false;\">EvilDuck32 <span id='connled' title='Connecting...'></span></a>"
+"<a href='#' data-sec='home'     onclick=\"showSection('home');return false;\">EvilDuck32 v" EVILDUCK32_VERSION " <span id='connled' title='Connecting...'></span></a>"
+"<a href='#' data-sec='sdcard'   onclick=\"showSection('sdcard');return false;\">SD Card</a>"
 "<a href='#' data-sec='sync'     onclick=\"showSection('sync');return false;\">Sync</a>"
 "<a href='#' data-sec='settings' onclick=\"showSection('settings');return false;\">Settings</a>"
 "<a href='#' data-sec='commands' onclick=\"showSection('commands');return false;\">Commands</a>"
@@ -135,7 +160,7 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "<tbody id='scriptList'></tbody>"
 "</table>"
 "<div class='row'>"
-"<input type='text' id='newFile' placeholder='filename.txt'>"
+"<input type='text' id='newFile' placeholder='filename'>"
 "<button class='success' onclick='createScript()'>create</button>"
 "</div>"
 "</section>"
@@ -179,6 +204,30 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "</section>"
 
 "</div>" /* end sec-home */
+
+/* ======================================================= */
+/* ── Section: SD Card ── */
+/* ======================================================= */
+"<div id='sec-sdcard' class='section'>"
+
+"<section>"
+"<h1>SD Card Browser "
+"<a class='primary' onclick='goUpDir()' style='cursor:pointer;float:right;font-size:1.5rem;margin-right:10px' title='Parent directory'>&#x2191;</a>"
+"<a class='primary' onclick='refreshSDCard()' style='cursor:pointer;float:right;font-size:1.5rem'>&#x21bb;</a></h1>"
+"<div id='sdcardInfo' style='margin-bottom:10px;color:#888;font-size:0.9rem'>Loading...</div>"
+"<table class='table' id='sdcardTable'>"
+"<thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Actions</th></tr></thead>"
+"<tbody id='sdcardList'></tbody>"
+"</table>"
+"<div id='sdcardViewer' style='display:none;margin-top:20px'>"
+"<h2>File Viewer <a class='primary' onclick='closeViewer()' style='cursor:pointer;float:right;font-size:1.5rem'>&#x2715;</a></h2>"
+"<div class='row'><input type='text' id='viewerPath' readonly style='width:100%;box-sizing:border-box;background:#23272a'></div>"
+"<div class='row'><textarea id='viewerContent' readonly style='height:400px'></textarea></div>"
+"<div class='row'><button class='primary' onclick='downloadViewedFile()'>&#x2B07; Download</button></div>"
+"</div>"
+"</section>"
+
+"</div>" /* end sec-sdcard */
 
 /* ======================================================= */
 /* ── Section: Sync ── */
@@ -412,7 +461,8 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "history.pushState({},'',(id==='home')?'/':('/'+id));"
 "if(id==='home'){refreshScripts();updateStatus();}"
 "else if(id==='settings'){loadSettings();}"
-"}"
+"else if(id==='sdcard'){sdcardCurrentPath='';refreshSDCard();}"
+"};"
 "window.addEventListener('popstate',function(){"
 "var path=location.pathname.replace('/','').replace('/','');if(!path||path==='index.html')path='home';"
 "showSection(path);"
@@ -433,6 +483,14 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "function schedulePoll(fast){"
 "clearTimeout(pollTimer);"
 "pollTimer=setTimeout(updateStatus,fast?500:5000);}"
+/* ── wait modal for long operations (OTA, etc.) ── */
+"function showWait(msg){"
+"var m=document.createElement('div');"
+"m.id='waitModal';"
+"m.style='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:9999;font-family:sans-serif';"
+"m.innerHTML='<div style=\"background:#2f3136;padding:40px;border-radius:8px;text-align:center;color:#bfbfbf;max-width:90%\"><div style=\"margin-bottom:20px\"><svg width=48 height=48 viewBox=\"0 0 24 24\"><circle cx=12 cy=12 r=10 stroke=#ffb300 stroke-width=4 fill=none stroke-dasharray=31.4 stroke-dashoffset=31.4><animateTransform attributeName=transform type=rotate dur=1s from=0 12 12 to=360 12 12 repeatCount=indefinite/><animate attributeName=stroke-dashoffset values=\"31.4;0;31.4\" dur=1.5s repeatCount=indefinite/></circle></svg></div><div>'+msg+'</div></div>';"
+"document.body.appendChild(m);}"
+"function hideWait(){var m=document.getElementById('waitModal');if(m)m.remove();}"
 /* ── status update ── */
 "function updateStatus(){"
 "fetch('/api/status').then(function(r){return r.json();}).then(function(d){"
@@ -518,7 +576,6 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "function createScript(){"
 "var name=E('newFile').value.trim();"
 "if(!name){alert('Enter filename');return;}"
-"if(!name.endsWith('.txt'))name+='.txt';"
 "currentScript=name;E('editorFile').value=name;"
 "E('editor').value='REM New DuckyScript\\nREM EvilDuck32\\n\\nDELAY 1000\\nSTRING Hello World\\nENTER';"
 "editorMsg('new file – saving...');unsavedChanged=true;E('newFile').value='';"
@@ -545,8 +602,11 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "var file=E('firmwareFile').files[0];"
 "if(!file)return alert('Select a .bin file');"
 "var fd=new FormData();fd.append('file',file);"
+"showWait('Uploading and flashing firmware...<br>This may take 30-60 seconds.<br>Please DO NOT disconnect!');"
 "fetch('/api/update',{method:'POST',body:fd})"
-".then(function(){alert('Uploaded. Device will reboot.');}).catch(function(e){alert('Error: '+e);});}"
+".then(function(r){hideWait(); if(r.ok){return r.json();}else{return r.text().then(function(t){throw new Error(t||('HTTP '+r.status));});}})"
+".then(function(d){alert('Firmware flashed successfully!\\nDevice will reboot...');})"
+".catch(function(e){hideWait(); alert('Error: '+e.message);});}"
 /* ── settings page ── */
 "function loadSettings(){"
 "fetch('/api/settings').then(function(r){return r.json();}).then(function(d){"
@@ -605,7 +665,7 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "'<option value=\"nvs\">NVS wins</option>'+"
 "'<option value=\"sd\">SD wins</option>'+"
 "'</select>';"
-"}"
+"};"
 "html+='<tr>'+"
 "'<td>'+e.name+'</td>'+"
 "'<td style=\"color:'+actionColor[e.action]+'\">'+actionLabel[e.action]+'</td>'+"
@@ -613,7 +673,7 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "'<td>'+(e.sd_size?e.sd_size+' B':'-')+'</td>'+"
 "'<td>'+resolve+'</td>'+"
 "'</tr>';"
-"}"
+"};"
 "document.getElementById('syncBody').innerHTML=html;"
 "document.getElementById('syncTable').style.display='table';"
 "var summary='Export: '+d.to_export+', Import: '+d.to_import+', Conflicts: '+d.conflicts;"
@@ -640,11 +700,116 @@ static const char spa_html[] = "HTTP/1.1 200 OK\r\n"
 "})"
 ".catch(function(e){alert('Sync error: '+e);});}"
 
+/* ── SD Card Browser ── */
+"var sdcardCurrentPath='';"
+"function refreshSDCard(){"
+"fetch('/api/sdcard/list?path='+encodeURIComponent(sdcardCurrentPath))"
+".then(function(r){return r.json();})"
+".then(function(d){"
+"sdcardCurrentPath=d.path||'';"
+"var info=E('sdcardInfo');"
+"var totalMB=(d.total_bytes/1024/1024).toFixed(1);"
+"var usedMB=(d.used_bytes/1024/1024).toFixed(1);"
+"var freeMB=(d.free_bytes/1024/1024).toFixed(1);"
+"info.innerHTML='Path: <b>/'"
+" + sdcardCurrentPath + "
+"'</b> | Total: '"
+" + totalMB + "
+"' MB | Used: '"
+" + usedMB + "
+"' MB | Free: '"
+" + freeMB + "
+"' MB';"
+"var list=E('sdcardList');list.innerHTML='';"
+"if(d.entries&&d.entries.length>0){"
+"for(var i=0;i<d.entries.length;i++){"
+"var e=d.entries[i];"
+"/* At root level (sdcardCurrentPath==''), show only folders */"
+"if(sdcardCurrentPath==''&&!e.is_dir)continue;"
+"var tr=document.createElement('tr');"
+"var sizeStr=e.is_dir?'--':(e.size<1024?e.size"
+" + "
+"' B':(e.size<1024*1024?(e.size/1024).toFixed(1)"
+" + "
+"' KB':(e.size/1024/1024).toFixed(1)"
+" + "
+"' MB'));"
+"var actions='';"
+"if(e.is_dir){actions='<button class=primary onclick=enterDir(\\\"'"
+" + e.path + "
+"'\\\")>open</button>';}"
+"else{actions='<button class=primary onclick=viewFile(\\\"'"
+" + e.path + "
+"'\\\")>view</button> <button class=success onclick=downloadFile(\\\"'"
+" + e.path + "
+"'\\\")><b>&#x2B07;</b></button> <button class=danger onclick=deleteSdFile(\\\"'"
+" + e.path + "
+"'\\\")>&#x1F5D1;</button>';}"
+"tr.innerHTML='<td>'+(e.is_dir?'&#x1F4C1; ':'&#x1F4C4; ')"
+" + e.name + "
+"'</td><td>'+(e.is_dir?'Folder':'File')+'</td><td>'"
+" + sizeStr + "
+"'</td><td nowrap>'"
+" + actions + "
+"'</td>';"
+"list.appendChild(tr);"
+"};"
+"}else{"
+"list.innerHTML='<tr><td colspan=4>Empty directory</td></tr>';"
+"};"
+"E('sdcardViewer').style.display='none';"
+"})"
+".catch(function(e){E('sdcardInfo').innerHTML='<span style=color:red>Error: '"
+" + e + "
+"'</span>';console.error(e);});}"
+"function enterDir(path){"
+"sdcardCurrentPath=path;"
+"refreshSDCard();"
+"};"
+"function goUpDir(){"
+"if(!sdcardCurrentPath)return;"
+"var idx=sdcardCurrentPath.lastIndexOf('/');"
+"sdcardCurrentPath=idx>0?sdcardCurrentPath.substring(0,idx):'';"
+"refreshSDCard();"
+"};"
+"function viewFile(path){"
+"fetch('/api/sdcard/read?path='"
+" + encodeURIComponent(path))"
+".then(function(r){"
+"if(!r.ok)throw new Error('HTTP '"
+" + r.status);"
+"return r.arrayBuffer();"
+"})"
+".then(function(b){return new TextDecoder('UTF-8').decode(b);})"
+".then(function(c){"
+"E('viewerPath').value=path;"
+"E('viewerContent').value=c;"
+"E('sdcardViewer').style.display='block';"
+"E('viewerContent').scrollTop=0;"
+"})"
+".catch(function(e){alert('Error: '"
+" + e);console.error(e);});}"
+"function closeViewer(){E('sdcardViewer').style.display='none';}"
+"function downloadFile(path){"
+"var a=document.createElement('a');"
+"a.href='/api/sdcard/read?path='+encodeURIComponent(path);"
+"a.download=path.split('/').pop();"
+"a.click();}"
+"function deleteSdFile(path){"
+"if(!confirm('Delete '+path.split('/').pop()+'?'))return;"
+"fetch('/api/sdcard/delete?path='+encodeURIComponent(path),{method:'DELETE'})"
+".then(function(r){if(r.ok){if(E('viewerPath').value===path)closeViewer();refreshSDCard();}else{alert('delete error ('+r.status+')');}})"
+".catch(function(e){alert('delete error');console.error(e);});}"
+"function downloadViewedFile(){"
+"var path=E('viewerPath').value;"
+"if(path)downloadFile(path);"
+"};"
+
 /* Show correct section on initial load */
 "(function(){"
 "var path=location.pathname.replace(/^\\/+/,'');"
 "if(!path||path==='index.html')path='home';"
-"var valid=['home','sync','settings','commands'];"
+"var valid=['home','sdcard','sync','settings','commands'];"
 "if(valid.indexOf(path)===-1)path='home';"
 "showSection(path);"
 "})();"
@@ -761,6 +926,7 @@ static void handle_api_status(int sock) {
     json_start();
     json_start_obj(NULL);
     json_add_str("mode", "HID");
+    json_add_str("version", EVILDUCK32_VERSION);
     json_add_bool("sd", sdcard_is_mounted());
     json_add_bool("wifi", wifi_manager_is_started());
     if (wifi_manager_is_started()) {
@@ -1201,7 +1367,7 @@ static void handle_api_update_stream(int sock, char *buffer, int buf_len,
 
     static ota_stream_t s;
     s.tail_len = 0;
-    s.window_len = strlen(boundary) + 4; // "\r\n--" + boundary
+    s.window_len = strlen(boundary) + 16; // "\r\n--<boundary>--\r\n" fully fits
     if (s.window_len > OTA_TAIL_MAX) s.window_len = OTA_TAIL_MAX;
 
     esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &s.handle);
@@ -1242,8 +1408,9 @@ static void handle_api_update_stream(int sock, char *buffer, int buf_len,
 
     // Everything still held back in the tail window is the tail of the firmware plus the
     // closing multipart marker - find where the marker starts and keep only what precedes it.
+    // Closing boundary is: \r\n--<boundary>--\r\n
     char marker[OTA_TAIL_MAX];
-    int marker_len = snprintf(marker, sizeof(marker), "\r\n--%s", boundary);
+    int marker_len = snprintf(marker, sizeof(marker), "\r\n--%s--", boundary);
     uint8_t *found = NULL;
     if (marker_len > 0 && (size_t)marker_len <= s.tail_len) {
         for (size_t i = 0; i + (size_t)marker_len <= s.tail_len; i++) {
@@ -1254,7 +1421,7 @@ static void handle_api_update_stream(int sock, char *buffer, int buf_len,
         }
     }
     if (!found) {
-        ESP_LOGE(TAG, "OTA: closing multipart boundary not found");
+        ESP_LOGE(TAG, "OTA: closing multipart boundary not found (searched for: %s)", marker);
         esp_ota_abort(s.handle);
         send_response(sock, "HTTP/1.1 400 Bad Request", "application/json", "{\"error\":\"Malformed upload\"}");
         return;
@@ -1548,6 +1715,229 @@ static void handle_api_sync_execute(int sock, const char *body) {
     send_response(sock, "HTTP/1.1 200 OK", "application/json", resp);
 }
 
+// ===== SD Card API Handlers ===== //
+static void handle_api_sdcard_list(int sock, const char *query)
+{
+    if (!sdcard_is_mounted()) {
+        send_response(sock, "HTTP/1.1 503 Service Unavailable", "application/json",
+                      "{\"error\":\"SD card not mounted\"}");
+        return;
+    }
+
+    // Parse path from query string (e.g., "?path=scripts")
+    char rel_path[128] = "";
+    if (query) {
+        // Query string may include trailing HTTP artifacts from the raw buffer
+        // (e.g. "path=scripts HTTP/1.1\r\nHost:..."). Find the first space or CR.
+        const char *path_start = NULL;
+        const char *path_param = strstr(query, "path=");
+        if (path_param) {
+            path_param += 5; // skip "path="
+            const char *end = strchr(path_param, '&');
+            if (!end) {
+                end = strchr(path_param, ' ');
+                if (!end) end = strchr(path_param, '\r');
+            }
+            int path_len = end ? (int)(end - path_param) : (int)strlen(path_param);
+            if (path_len > 0 && path_len < (int)sizeof(rel_path)) {
+                memcpy(rel_path, path_param, path_len);
+                rel_path[path_len] = '\0';
+            }
+        }
+    }
+    // URL-decode the extracted path
+    url_decode(rel_path, sizeof(rel_path), rel_path);
+
+    // Security: prevent path traversal
+    if (strstr(rel_path, "..") != NULL) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"Invalid path\"}");
+        return;
+    }
+
+    // Large type (200 entries × ~200 bytes ≈ 40 KB), must be static to avoid stack overflow
+    static sdcard_dir_list_t list;
+    esp_err_t ret = sdcard_list_dir(rel_path, &list);
+    if (ret != ESP_OK) {
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"Failed to list directory\"}");
+        return;
+    }
+
+    // Build JSON response
+    static char resp[8192];
+    int pos = 0;
+    pos += snprintf(resp + pos, sizeof(resp) - pos,
+                    "{\"path\":\"%s\",\"total_bytes\":%llu,\"used_bytes\":%llu,\"free_bytes\":%llu,\"entries\":[",
+                    rel_path,
+                    (unsigned long long)list.total_bytes,
+                    (unsigned long long)list.used_bytes,
+                    (unsigned long long)list.free_bytes);
+
+    for (int i = 0; i < list.count && pos < (int)sizeof(resp) - 120; i++) {
+        const sdcard_file_entry_t *e = &list.entries[i];
+        char mtime_str[32];
+        struct tm *tm_info = localtime(&e->mtime);
+        if (tm_info && tm_info->tm_year >= 80) {
+            strftime(mtime_str, sizeof(mtime_str), "%Y-%m-%d %H:%M", tm_info);
+        } else {
+            snprintf(mtime_str, sizeof(mtime_str), "-");
+        }
+
+        pos += snprintf(resp + pos, sizeof(resp) - pos,
+                        "%s{\"name\":\"%s\",\"path\":\"%s\",\"is_dir\":%s,\"size\":%zu,\"mtime\":\"%s\"}",
+                        i > 0 ? "," : "",
+                        e->name, e->path, e->is_dir ? "true" : "false", e->size, mtime_str);
+    }
+
+    pos += snprintf(resp + pos, sizeof(resp) - pos, "]}");
+
+    send_response(sock, "HTTP/1.1 200 OK", "application/json", resp);
+}
+
+static void handle_api_sdcard_read(int sock, const char *query)
+{
+    if (!sdcard_is_mounted()) {
+        send_response(sock, "HTTP/1.1 503 Service Unavailable", "application/json",
+                      "{\"error\":\"SD card not mounted\"}");
+        return;
+    }
+
+    // Parse path from query string
+    char rel_path[128] = "";
+    if (query) {
+        const char *path_start = strstr(query, "path=");
+        if (path_start) {
+            path_start += 5; // skip "path="
+            const char *end = strchr(path_start, '&');
+            if (!end) {
+                end = strchr(path_start, ' ');
+                if (!end) end = strchr(path_start, '\r');
+            }
+            int path_len = end ? (int)(end - path_start) : (int)strlen(path_start);
+            if (path_len > 0 && path_len < (int)sizeof(rel_path)) {
+                memcpy(rel_path, path_start, path_len);
+                rel_path[path_len] = '\0';
+            }
+        }
+    }
+    // URL-decode the extracted path (browser sends %2F for / etc.)
+    url_decode(rel_path, sizeof(rel_path), rel_path);
+
+    if (rel_path[0] == '\0') {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"No path specified\"}");
+        return;
+    }
+
+    // Security: prevent path traversal
+    if (strstr(rel_path, "..") != NULL) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"Invalid path\"}");
+        return;
+    }
+
+    char buffer[4096];
+    size_t bytes_read = 0;
+    esp_err_t ret = sdcard_read_file(rel_path, buffer, sizeof(buffer), &bytes_read);
+
+    if (ret != ESP_OK) {
+        send_response(sock, "HTTP/1.1 404 Not Found", "application/json",
+                      "{\"error\":\"File not found\"}");
+        return;
+    }
+
+    // Send as plain text for viewing
+    char header[256];
+    snprintf(header, sizeof(header),
+             "HTTP/1.1 200 OK\r\n"
+             "Content-Type: text/plain; charset=UTF-8\r\n"
+             "Content-Length: %zu\r\n"
+             "Connection: close\r\n\r\n",
+             bytes_read);
+
+    send_all(sock, header, strlen(header));
+    send_all(sock, buffer, bytes_read);
+}
+
+static void handle_api_sdcard_delete(int sock, const char *query)
+{
+    if (!sdcard_is_mounted()) {
+        send_response(sock, "HTTP/1.1 503 Service Unavailable", "application/json",
+                      "{\"error\":\"SD card not mounted\"}");
+        return;
+    }
+
+    // Parse path from query string
+    char rel_path[128] = "";
+    if (query) {
+        const char *path_start = strstr(query, "path=");
+        if (path_start) {
+            path_start += 5; // skip "path="
+            const char *end = strchr(path_start, '&');
+            if (!end) {
+                end = strchr(path_start, ' ');
+                if (!end) end = strchr(path_start, '\r');
+            }
+            int path_len = end ? (int)(end - path_start) : (int)strlen(path_start);
+            if (path_len > 0 && path_len < (int)sizeof(rel_path)) {
+                memcpy(rel_path, path_start, path_len);
+                rel_path[path_len] = '\0';
+            }
+        }
+    }
+    // URL-decode the extracted path (browser sends %2F for / etc.)
+    url_decode(rel_path, sizeof(rel_path), rel_path);
+
+    if (rel_path[0] == '\0') {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"No path specified\"}");
+        return;
+    }
+
+    // Security: prevent path traversal
+    if (strstr(rel_path, "..") != NULL) {
+        send_response(sock, "HTTP/1.1 400 Bad Request", "application/json",
+                      "{\"error\":\"Invalid path\"}");
+        return;
+    }
+
+    esp_err_t ret = sdcard_delete_file(rel_path);
+    if (ret != ESP_OK) {
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"Failed to delete file\"}");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Deleted SD file: %s", rel_path);
+    send_response(sock, "HTTP/1.1 200 OK", "application/json", "{\"status\":\"deleted\"}");
+}
+
+static void handle_api_sdcard_info(int sock)
+{
+    if (!sdcard_is_mounted()) {
+        send_response(sock, "HTTP/1.1 503 Service Unavailable", "application/json",
+                      "{\"error\":\"SD card not mounted\"}");
+        return;
+    }
+
+    uint64_t total, used, free;
+    esp_err_t ret = sdcard_get_info(&total, &used, &free);
+
+    if (ret != ESP_OK) {
+        send_response(sock, "HTTP/1.1 500 Internal Server Error", "application/json",
+                      "{\"error\":\"Failed to get SD card info\"}");
+        return;
+    }
+
+    char resp[256];
+    snprintf(resp, sizeof(resp),
+             "{\"total_bytes\":%llu,\"used_bytes\":%llu,\"free_bytes\":%llu}",
+             (unsigned long long)total, (unsigned long long)used, (unsigned long long)free);
+
+    send_response(sock, "HTTP/1.1 200 OK", "application/json", resp);
+}
+
 // ===== HTTP Request Handler ===== //
 static void handle_client(int sock) {
     // Static buffer: prevents stack overflow (task stack is only 8 KB).
@@ -1581,6 +1971,12 @@ static void handle_client(int sock) {
         return;
     }
     ESP_LOGI(TAG, "Parsed: method='%s', path='%s'", method, path);
+
+    // Strip query string from path BEFORE routing, so all strcmp/strncmp checks below
+    // match the clean path regardless of whether the client sent ?key=value arguments.
+    // The query string is extracted via strchr(path, '?') wherever a handler needs it.
+    char *query_str = strchr(path, '?');
+    if (query_str) *query_str = '\0';
 
     // Firmware uploads (~1-2 MB) don't fit in the 16 KB request buffer below, so this
     // path is handled separately before that buffer fills up - see handle_api_update_stream().
@@ -1616,7 +2012,7 @@ static void handle_client(int sock) {
     // so the browser can load the correct section directly (e.g. after history.pushState).
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 ||
         strcmp(path, "/settings") == 0 || strcmp(path, "/commands") == 0 ||
-        strcmp(path, "/sync") == 0 ||
+        strcmp(path, "/sync") == 0 || strcmp(path, "/sdcard") == 0 ||
         strcmp(path, "/settings.html") == 0 || strcmp(path, "/commands.html") == 0) {
         send_all(sock, spa_html, strlen(spa_html));
     }
@@ -1688,6 +2084,25 @@ static void handle_client(int sock) {
     else if (strcmp(path, "/api/sync/execute") == 0 && strcmp(method, "POST") == 0) {
         char *body = strstr(buffer, "\r\n\r\n");
         handle_api_sync_execute(sock, body ? body + 4 : NULL);
+    }
+    else if (strcmp(path, "/api/sdcard/list") == 0 && strcmp(method, "GET") == 0) {
+        // Extract query string from the original request line (query_str was stripped from path)
+        char *q = strchr(buffer, '?');
+        char *query = q ? q + 1 : NULL;
+        handle_api_sdcard_list(sock, query);
+    }
+    else if (strcmp(path, "/api/sdcard/read") == 0 && strcmp(method, "GET") == 0) {
+        char *q = strchr(buffer, '?');
+        char *query = q ? q + 1 : NULL;
+        handle_api_sdcard_read(sock, query);
+    }
+    else if (strcmp(path, "/api/sdcard/delete") == 0 && strcmp(method, "DELETE") == 0) {
+        char *q = strchr(buffer, '?');
+        char *query = q ? q + 1 : NULL;
+        handle_api_sdcard_delete(sock, query);
+    }
+    else if (strcmp(path, "/api/sdcard/info") == 0 && strcmp(method, "GET") == 0) {
+        handle_api_sdcard_info(sock);
     }
     else if (strcmp(path, "/api/upload") == 0 && strcmp(method, "POST") == 0) {
         char *body = strstr(buffer, "\r\n\r\n");
@@ -1790,7 +2205,7 @@ static void http_server_task(void *arg) {
 
 // ===== Public API ===== //
 esp_err_t webserver_init(void) {
-    xTaskCreate(http_server_task, "http_server", 8192, NULL, 5, NULL);
+    xTaskCreate(http_server_task, "http_server", 16384, NULL, 5, NULL);
     ESP_LOGI(TAG, "HTTP server task created");
     return ESP_OK;
 }
