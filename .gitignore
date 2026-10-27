@@ -18,3 +18,14 @@ start_claude.sh
 
 # Claude Code lokale Einstellungen
 .claude/
+
+# Build-Artefakte
+firmware/
+
+# Lokale Test-Payloads & Scribbles
+test_payloads/
+
+# Backups & Temp
+backups/
+.old_claude/
+fehler.txt
