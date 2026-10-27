@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "settings.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -74,13 +75,20 @@ esp_err_t wifi_manager_start(void)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Starting WiFi AP '%s' on channel %d", WIFI_AP_SSID, WIFI_AP_CHANNEL);
+    const char *ap_ssid = settings_get_ssid();
+    const char *ap_password = settings_get_password();
+    int ap_channel = settings_get_channel();
+    const char *ap_ip = settings_get_ip();
+    const char *ap_gateway = settings_get_gateway();
+    const char *ap_netmask = settings_get_netmask();
+
+    ESP_LOGI(TAG, "Starting WiFi AP '%s' on channel %d", ap_ssid, ap_channel);
 
     // Configure AP
     wifi_config_t wifi_config = {
         .ap = {
-            .ssid_len = strlen(WIFI_AP_SSID),
-            .channel = WIFI_AP_CHANNEL,
+            .ssid_len = strlen(ap_ssid),
+            .channel = ap_channel,
             .max_connection = WIFI_AP_MAX_CONN,
             .authmode = WIFI_AUTH_WPA2_PSK,
             .pmf_cfg = {
@@ -89,8 +97,8 @@ esp_err_t wifi_manager_start(void)
         },
     };
 
-    strcpy((char*)wifi_config.ap.ssid, WIFI_AP_SSID);
-    strcpy((char*)wifi_config.ap.password, WIFI_AP_PASSWORD);
+    strcpy((char*)wifi_config.ap.ssid, ap_ssid);
+    strcpy((char*)wifi_config.ap.password, ap_password);
 
     // Set WiFi mode
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -98,9 +106,9 @@ esp_err_t wifi_manager_start(void)
 
     // Set IP configuration
     esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr = ipaddr_addr(WIFI_AP_IP);
-    ip_info.gw.addr = ipaddr_addr(WIFI_AP_GATEWAY);
-    ip_info.netmask.addr = ipaddr_addr(WIFI_AP_NETMASK);
+    ip_info.ip.addr = ipaddr_addr(ap_ip);
+    ip_info.gw.addr = ipaddr_addr(ap_gateway);
+    ip_info.netmask.addr = ipaddr_addr(ap_netmask);
     esp_netif_dhcps_stop(netif);
     esp_netif_set_ip_info(netif, &ip_info);
     esp_netif_dhcps_start(netif);
@@ -109,7 +117,7 @@ esp_err_t wifi_manager_start(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 
     wifi_started = true;
-    ESP_LOGI(TAG, "WiFi AP started. IP: %s", WIFI_AP_IP);
+    ESP_LOGI(TAG, "WiFi AP started. IP: %s", ap_ip);
 
     return ESP_OK;
 }
@@ -135,5 +143,5 @@ bool wifi_manager_is_started(void)
 
 const char* wifi_manager_get_ip(void)
 {
-    return WIFI_AP_IP;
+    return settings_get_ip();
 }
