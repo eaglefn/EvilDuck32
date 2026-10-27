@@ -13,11 +13,23 @@ static const char *TAG = "script_storage";
 // NVS handle opened against NVS_SCRIPT_NS namespace
 static nvs_handle_t s_nvs_handle;
 
-// NVS key format: "s_<name>" where name is the sanitized filename without .txt extension.
-// Max NVS key length is 15 chars. Prefix "s_" = 2 chars → max 13 chars for the name part.
-#define KEY_PREFIX     "s_"
-#define KEY_PREFIX_LEN 2
-#define KEY_NAME_MAX   13  // 15 - 2
+// Scripts are stored in fixed slots (0..MAX_SCRIPTS-1) instead of name-derived NVS keys.
+// NVS keys are capped at 15 chars, which is too short to hold arbitrary filenames (any
+// length, any or no extension) directly - a prior design derived the key from a sanitized,
+// truncated copy of the name and reconstructed the display name by re-appending ".txt",
+// which both collided on longer names and mangled names that were already exactly at the
+// truncation boundary (e.g. "module_rot.txt" -> truncated to "module_rot.tx" -> extension
+// no longer recognized -> displayed back as "module_rot.tx.txt").
+//
+// Instead, "s_<slot>" holds the script content and "n_<slot>" holds the exact original
+// filename as a separate value (not a key, so MAX_SCRIPT_NAME is the only limit) - the
+// filename round-trips exactly as typed, with whatever extension or none at all.
+static void slot_content_key(int slot, char *key, size_t key_size) {
+    snprintf(key, key_size, "s_%d", slot);
+}
+static void slot_name_key(int slot, char *key, size_t key_size) {
+    snprintf(key, key_size, "n_%d", slot);
+}
 
 // Normalize filename to lowercase in-place
 static void str_tolower(char *s)
@@ -25,60 +37,43 @@ static void str_tolower(char *s)
     for (; *s; s++) *s = (char)tolower((unsigned char)*s);
 }
 
-// Case-insensitive check for .txt / .TXT extension
-static bool has_txt_extension(const char *name)
+static bool names_equal_ci(const char *a, const char *b)
 {
-    size_t len = strlen(name);
-    if (len < 5) return false;
-    const char *e = name + len - 4;
-    return e[0] == '.' &&
-           (e[1] == 't' || e[1] == 'T') &&
-           (e[2] == 'x' || e[2] == 'X') &&
-           (e[3] == 't' || e[3] == 'T');
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+        a++; b++;
+    }
+    return *a == *b;
 }
 
-// Sanitize filename into a NVS-safe key suffix (no special chars, no .txt, max KEY_NAME_MAX chars).
-static void make_key(const char *filename, char *key, size_t key_size)
+// Finds the slot currently holding `name` (case-insensitive), or -1 if none.
+static int find_slot_by_name(const char *name)
 {
-    // Copy and sanitize
-    char name[KEY_NAME_MAX + 1];
-    size_t i = 0;
-    for (; i < KEY_NAME_MAX && filename[i] != '\0'; i++) {
-        char c = filename[i];
-        if (c == ' ' || c == '/' || c == '\\' || c == ':' ||
-            c == '*' || c == '?' || c == '"' || c == '<' ||
-            c == '>' || c == '|') {
-            name[i] = '_';
-        } else {
-            name[i] = c;
+    for (int slot = 0; slot < MAX_SCRIPTS; slot++) {
+        char key[8];
+        slot_name_key(slot, key, sizeof(key));
+        char stored[MAX_SCRIPT_NAME];
+        size_t len = sizeof(stored);
+        if (nvs_get_str(s_nvs_handle, key, stored, &len) == ESP_OK &&
+            names_equal_ci(stored, name)) {
+            return slot;
         }
     }
-    name[i] = '\0';
-
-    // Strip .txt / .TXT extension if present (case-insensitive)
-    size_t len = strlen(name);
-    if (has_txt_extension(name)) {
-        name[len - 4] = '\0';
-        len -= 4;
-    }
-
-    // Truncate to KEY_NAME_MAX chars (already limited above, but be safe)
-    if (len > KEY_NAME_MAX) {
-        name[KEY_NAME_MAX] = '\0';
-    }
-
-    // Lowercase: NVS keys are case-sensitive; always use lowercase for consistency
-    str_tolower(name);
-
-    snprintf(key, key_size, KEY_PREFIX "%s", name);
+    return -1;
 }
 
-// Derive display filename from NVS key (strip "s_" prefix, append ".txt").
-static void key_to_filename(const char *key, char *filename, size_t filename_size)
+// Finds the first slot with no name entry (free), or -1 if all MAX_SCRIPTS slots are used.
+static int find_free_slot(void)
 {
-    // skip "s_" prefix
-    const char *name = key + KEY_PREFIX_LEN;
-    snprintf(filename, filename_size, "%s.txt", name);
+    for (int slot = 0; slot < MAX_SCRIPTS; slot++) {
+        char key[8];
+        slot_name_key(slot, key, sizeof(key));
+        size_t len = 0;
+        if (nvs_get_str(s_nvs_handle, key, NULL, &len) == ESP_ERR_NVS_NOT_FOUND) {
+            return slot;
+        }
+    }
+    return -1;
 }
 
 esp_err_t script_storage_init(void)
@@ -98,18 +93,33 @@ esp_err_t script_storage_init(void)
 
 esp_err_t script_storage_save(const char *name, const char *content)
 {
-    if (!name || !content) {
+    if (!name || !content || name[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
 
-    char key[16];
-    make_key(name, key, sizeof(key));
+    int slot = find_slot_by_name(name);
+    if (slot < 0) {
+        slot = find_free_slot();
+        if (slot < 0) {
+            ESP_LOGE(TAG, "Script storage full (max %d scripts)", MAX_SCRIPTS);
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
-    ESP_LOGI(TAG, "Saving script '%s' as key '%s' (%d bytes)", name, key, strlen(content));
+    char content_key[8], name_key[8];
+    slot_content_key(slot, content_key, sizeof(content_key));
+    slot_name_key(slot, name_key, sizeof(name_key));
 
-    esp_err_t err = nvs_set_str(s_nvs_handle, key, content);
+    ESP_LOGI(TAG, "Saving script '%s' to slot %d (%d bytes)", name, slot, (int)strlen(content));
+
+    esp_err_t err = nvs_set_str(s_nvs_handle, content_key, content);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "nvs_set_str (content) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = nvs_set_str(s_nvs_handle, name_key, name);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_str (name) failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -119,7 +129,7 @@ esp_err_t script_storage_save(const char *name, const char *content)
         return err;
     }
 
-    ESP_LOGI(TAG, "Script saved: '%s'", name);
+    ESP_LOGI(TAG, "Script saved: '%s' (slot %d)", name, slot);
     return ESP_OK;
 }
 
@@ -129,10 +139,16 @@ esp_err_t script_storage_load(const char *name, char *content, size_t content_si
         return ESP_ERR_INVALID_ARG;
     }
 
-    char key[16];
-    make_key(name, key, sizeof(key));
+    int slot = find_slot_by_name(name);
+    if (slot < 0) {
+        ESP_LOGW(TAG, "Script not found: '%s'", name);
+        return ESP_ERR_NOT_FOUND;
+    }
 
-    ESP_LOGI(TAG, "Loading script '%s' (key '%s')", name, key);
+    char key[8];
+    slot_content_key(slot, key, sizeof(key));
+
+    ESP_LOGI(TAG, "Loading script '%s' (slot %d)", name, slot);
 
     size_t required_size = content_size;
     esp_err_t err = nvs_get_str(s_nvs_handle, key, content, &required_size);
@@ -142,7 +158,7 @@ esp_err_t script_storage_load(const char *name, char *content, size_t content_si
         return ESP_ERR_NOT_FOUND;
     }
     if (err == ESP_ERR_NVS_INVALID_LENGTH) {
-        ESP_LOGE(TAG, "Script '%s' too large for buffer (%d bytes available)", name, content_size);
+        ESP_LOGE(TAG, "Script '%s' too large for buffer (%d bytes available)", name, (int)content_size);
         return ESP_ERR_INVALID_SIZE;
     }
     if (err != ESP_OK) {
@@ -150,7 +166,7 @@ esp_err_t script_storage_load(const char *name, char *content, size_t content_si
         return err;
     }
 
-    ESP_LOGI(TAG, "Script loaded: '%s' (%d bytes)", name, required_size);
+    ESP_LOGI(TAG, "Script loaded: '%s' (%d bytes)", name, (int)required_size);
     return ESP_OK;
 }
 
@@ -160,18 +176,26 @@ esp_err_t script_storage_delete(const char *name)
         return ESP_ERR_INVALID_ARG;
     }
 
-    char key[16];
-    make_key(name, key, sizeof(key));
-
-    ESP_LOGI(TAG, "Deleting script '%s' (key '%s')", name, key);
-
-    esp_err_t err = nvs_erase_key(s_nvs_handle, key);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
+    int slot = find_slot_by_name(name);
+    if (slot < 0) {
         ESP_LOGW(TAG, "Script not found: '%s'", name);
         return ESP_ERR_NOT_FOUND;
     }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_erase_key failed: %s", esp_err_to_name(err));
+
+    char content_key[8], name_key[8];
+    slot_content_key(slot, content_key, sizeof(content_key));
+    slot_name_key(slot, name_key, sizeof(name_key));
+
+    ESP_LOGI(TAG, "Deleting script '%s' (slot %d)", name, slot);
+
+    esp_err_t err = nvs_erase_key(s_nvs_handle, content_key);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "nvs_erase_key (content) failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = nvs_erase_key(s_nvs_handle, name_key);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "nvs_erase_key (name) failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -192,32 +216,13 @@ int script_storage_list(char names[][MAX_SCRIPT_NAME], int max_count)
     }
 
     int count = 0;
-    nvs_iterator_t it = NULL;
-
-    // Bug fix: first arg is the NVS *partition* name ("nvs"), second is the *namespace* ("scripts").
-    // Using NVS_PART_NAME and NVS_SCRIPT_NS avoids the previous confusion where the FAT
-    // partition "storage" was accidentally passed as partition name.
-    esp_err_t err = nvs_entry_find(NVS_PART_NAME, NVS_SCRIPT_NS, NVS_TYPE_STR, &it);
-
-    while (err == ESP_OK && it != NULL && count < max_count) {
-        nvs_entry_info_t info;
-        err = nvs_entry_info(it, &info);
-        if (err != ESP_OK) break;
-
-        // Only collect keys that start with our prefix
-        if (strncmp(info.key, KEY_PREFIX, KEY_PREFIX_LEN) == 0) {
-            char display_name[MAX_SCRIPT_NAME];
-            key_to_filename(info.key, display_name, sizeof(display_name));
-            strncpy(names[count], display_name, MAX_SCRIPT_NAME - 1);
-            names[count][MAX_SCRIPT_NAME - 1] = '\0';
+    for (int slot = 0; slot < MAX_SCRIPTS && count < max_count; slot++) {
+        char key[8];
+        slot_name_key(slot, key, sizeof(key));
+        size_t len = MAX_SCRIPT_NAME;
+        if (nvs_get_str(s_nvs_handle, key, names[count], &len) == ESP_OK) {
             count++;
         }
-
-        err = nvs_entry_next(&it);
-    }
-
-    if (it != NULL) {
-        nvs_release_iterator(it);
     }
 
     ESP_LOGI(TAG, "Listed %d scripts", count);
@@ -227,13 +232,7 @@ int script_storage_list(char names[][MAX_SCRIPT_NAME], int max_count)
 bool script_storage_exists(const char *name)
 {
     if (!name) return false;
-
-    char key[16];
-    make_key(name, key, sizeof(key));
-
-    size_t required_size = 0;
-    esp_err_t err = nvs_get_str(s_nvs_handle, key, NULL, &required_size);
-    return (err == ESP_OK || err == ESP_ERR_NVS_INVALID_LENGTH);
+    return find_slot_by_name(name) >= 0;
 }
 
 const char* script_storage_get_autorun(void)
@@ -313,8 +312,11 @@ esp_err_t script_storage_get_all(script_storage_entry_t *scripts, int max_count,
 // Returns the byte size of a script in NVS (0 if not found).
 static size_t nvs_script_size(const char *name)
 {
-    char key[16];
-    make_key(name, key, sizeof(key));
+    int slot = find_slot_by_name(name);
+    if (slot < 0) return 0;
+
+    char key[8];
+    slot_content_key(slot, key, sizeof(key));
     size_t sz = 0;
     esp_err_t err = nvs_get_str(s_nvs_handle, key, NULL, &sz);
     if (err == ESP_OK || err == ESP_ERR_NVS_INVALID_LENGTH) {
@@ -355,9 +357,10 @@ esp_err_t script_storage_sync_preview(sync_preview_t *preview)
         while ((entry = readdir(dir)) != NULL && sd_count < MAX_SCRIPTS) {
             // Skip . and .. and hidden files
             if (entry->d_name[0] == '.') continue;
-            // Only consider .txt / .TXT files (case-insensitive).
+            // Any non-hidden file is a script – the NVS slot scheme stores exact
+            // filenames with arbitrary or no extension, so sync must treat every
+            // file in the scripts directory as a script (not just .txt).
             // Note: do NOT check d_type – FATFS VFS returns DT_UNKNOWN for all entries.
-            if (!has_txt_extension(entry->d_name)) continue;
             // Normalize to lowercase so NVS key comparison works correctly
             // (NVS keys are case-sensitive; SD FAT may return UPPERCASE names)
             strncpy(sd_names[sd_count], entry->d_name, MAX_SCRIPT_NAME - 1);
