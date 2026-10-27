@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-ESP32--S3-blue)
 ![Framework](https://img.shields.io/badge/framework-ESP--IDF%20%2F%20PlatformIO-orange)
 ![Version](https://img.shields.io/badge/version-1.4.4-brightgreen)
-![License](https://img.shields.io/badge/license-unspecified-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 <p align="center">
   <img src="Bilder/EvilDuck32_HID_Mode.jpeg" alt="EvilDuck32 plugged into a USB port, display showing HID mode status" width="320">
@@ -428,7 +428,7 @@ Built on [Espressif ESP-IDF](https://github.com/espressif/esp-idf), [PlatformIO]
 
 ## License
 
-This repository does not yet include a `LICENSE` file. Until one is added, standard copyright applies (all rights reserved) — please open an issue if you'd like to use this project under an open-source license.
+MIT — see [LICENSE](LICENSE). Use it freely, including commercially, for building, forking, and teaching; just keep the copyright notice intact. This doesn't change the Disclaimer at the top of this document: you're still responsible for how and where you point it.
 
 ---
 
