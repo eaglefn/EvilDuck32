@@ -1,0 +1,12 @@
+REM Opens an elevated (Administrator) Command Prompt via UAC, then runs a PowerShell info command.
+DEFAULT_DELAY 1000
+GUI r
+STRING cmd
+CTRL SHIFT ENTER
+LEFT
+ENTER
+STRING Hello World! Now as Administrator! Houston, we have a problem!
+ENTER
+DELAY 3000
+STRING powershell Get-ComputerInfo
+ENTER

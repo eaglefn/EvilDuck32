@@ -1,0 +1,16 @@
+REM Cycles the onboard RGB LED through test colors (off, white, blue, red, purple, magenta, green).
+DEFAULTDELAY 1000
+REM LED off
+LED 0 0 0
+REM LED white
+LED 255 255 255
+REM LED blue
+LED 0 0 255
+REM LED red
+LED 255 0 0
+REM LED purple
+LED 128 0 255
+REM LED magenta
+LED 255 0 255
+REM LED green
+LED 0 255 0

@@ -1,0 +1,15 @@
+REM Runs a PowerShell info command, then chains into led_test via RUN to demonstrate script chaining.
+DEFAULT_DELAY 1000
+GUI r
+STRING cmd
+ENTER
+STRING Hello World! Houston, we have a problem!
+ENTER
+DELAY 3000
+STRING powershell Get-ComputerInfo
+ENTER
+DELAY 2000
+STRING Now for the LED test!
+ENTER
+ALT F4
+RUN led_test
