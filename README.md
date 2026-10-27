@@ -31,6 +31,7 @@ If you don't have authorization — don't plug it in.
 - [Features](#features)
 - [Hardware](#hardware)
 - [Screenshots](#screenshots)
+- [Device Photos](#device-photos)
 - [Getting Started](#getting-started)
 - [Build & Development](#build--development)
 - [Architecture](#architecture)
@@ -116,7 +117,19 @@ The web UI is organized into five tabs: **Scripts** (home), **SD Card**, **Sync*
   <tr>
     <td align="center"><img src="images/SD-Card_Browser.png" width="280"><br><sub>SD Card browser — view / download / delete files</sub></td>
     <td align="center"><img src="images/SD-Card_Sync.png" width="280"><br><sub>Sync — compare & merge NVS scripts with the SD card</sub></td>
-    <td align="center"><img src="images/EvilDuck32_Arming_Mode.jpeg" width="280"><br><sub>Arming Mode — SD card exposed as a USB drive</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+---
+
+## Device Photos
+
+<table>
+  <tr>
+    <td align="center"><img src="images/EvilDuck32_HID_Mode.jpeg" width="280"><br><sub>Normal operation — status display showing HID mode, SD card and Wi-Fi IP</sub></td>
+    <td align="center"><img src="images/EvilDuck32_Arming_Mode.jpeg" width="280"><br><sub>Arming Mode — SD card exposed as a USB drive on the host PC</sub></td>
+    <td align="center"><img src="images/EvilDuck32_Backside.jpeg" width="280"><br><sub>Backside — ESP32-S3-LCD-1.47 board with microSD card installed</sub></td>
   </tr>
 </table>
 
