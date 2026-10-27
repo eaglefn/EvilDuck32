@@ -26,3 +26,10 @@ test_payloads/
 backups/
 .old_claude/
 fehler.txt
+
+# Fremde Reste in managed_components/ (nicht in dependencies.lock, nicht
+# unser Projekt - vermutlich versehentlich aus einem Referenzprojekt
+# miteingecheckt). Die echten, bewusst getrackten Dependencies
+# (espressif__tinyusb, espressif__led_strip, lvgl__lvgl) sind davon
+# nicht betroffen.
+managed_components/components/
