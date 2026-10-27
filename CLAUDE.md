@@ -31,6 +31,13 @@ pio run --target upload --target monitor
 
 **Wichtig:** Nach Änderungen an `sdkconfig.defaults` immer `pio run -t clean` ausführen!
 
+**Versionierung:** Einzige Quelle der Wahrheit ist `EVILDUCK32_VERSION` in
+`components/settings/include/settings.h` – wird sowohl im Display-Titel (`src/app_main.c`)
+als auch in der Web-UI (`/api/status`, Nav-Leiste) verwendet, damit beide nie auseinanderlaufen.
+Fertige `firmware.bin`-Builds werden zusätzlich manuell unter `firmware/v<X.Y.Z>/firmware.bin`
+abgelegt (lokales Archiv, nicht in Git getrackt) – bei einer neuen Version: Konstante bumpen,
+`pio run`, Ergebnis in einen neuen `firmware/vX.Y.Z/`-Unterordner kopieren.
+
 ---
 
 ## Architektur
@@ -41,15 +48,17 @@ components/
 ├── display/          ✅ LVGL ST7789 Display-Treiber (MADCTL=0x30 korrigiert)
 ├── led/              ✅ WS2812 RGB-Status-LED (GPIO 38)
 ├── sdcard/           ✅ SD-Card Filesystem (SDMMC, FATFS-Mount für Normalbetrieb)
-├── duckyscript/      ✅ DuckyScript Interpreter (HID-Befehle)
+├── duckyscript/      ✅ DuckyScript Interpreter (HID-Befehle, inkl. RUN-Skriptverkettung)
+├── script_storage/   ✅ Skript-Speicherung in NVS (Slot-Schema, siehe eigene Sektion unten)
+├── settings/         ✅ Einstellungen in NVS + EVILDUCK32_VERSION-Konstante
 ├── usb_hid/          ✅ TinyUSB HID+RNDIS Composite (+ MSC-Descriptor für Storage-Modus)
 ├── usb_storage/      ✅ USB Mass Storage (SD-Karte roh als USB-Laufwerk, Storage/ARMING-Modus)
 ├── tinyusb_config/   ✅ tusb_config.h für TinyUSB-Konfiguration
+├── wifi_manager/     ✅ WiFi AP (SSID/Passwort in settings, Default-Gateway 192.168.4.1)
+├── webserver/        ✅ HTTP-Server + Web-UI (Scripts, Sync, Settings, OTA-Update, Commands-Doku, SD-Browser mit View/Download/Delete)
 ├── attack_mode/      ⬜  Leer - Attack-Mode-Manager
 ├── bt_hid/           ⬜  Leer - Bluetooth HID
-├── usb_rndis/        ⬜  Leer - RNDIS-Logik liegt in usb_hid/ (kein eigenes Component nötig)
-├── webserver/        ⬜  Leer - HTTP Management
-└── wifi_manager/     ⬜  Leer - WiFi AP
+└── usb_rndis/        ⬜  Leer - RNDIS-Logik liegt in usb_hid/ (kein eigenes Component nötig)
 ```
 
 ### Hauptanwendung (src/app_main.c)
@@ -100,6 +109,51 @@ esp_lcd_panel_io_tx_param(io_handle, 0x36, &madctl, 1);
 
 ### USB HID Stub
 **Aktueller Status:** Vollständig implementiert – Composite HID + RNDIS. RNDIS ist standardmäßig inaktiv (siehe ATTACKMODE-Philosophie).
+
+### OTA-Update: "Malformed upload" / Firmware-Datei korrumpiert
+**Ursache:** Beim Streaming-Multipart-Parser (`handle_api_update_stream()` in `webserver.c`)
+war das Trailing-Window, das die schließende Multipart-Boundary (`\r\n--<boundary>--\r\n`)
+zurückhält, exakt so groß wie der gesuchte Marker `\r\n--<boundary>` selbst
+(`window_len = strlen(boundary) + 4`). Dadurch wurde der Marker schon ins Flash geschrieben,
+bevor das abschließende `--\r\n` überhaupt ankam – am Ende fehlte der Marker im Fenster.
+**Lösung:** Fenster großzügiger bemessen (`strlen(boundary) + 16`), damit die komplette
+schließende Sequenz inklusive `--\r\n` sicher im Fenster bleibt (`webserver.c`,
+`handle_api_update_stream()`).
+
+### Web-UI: Button zeigt "Erfolg", obwohl der Request fehlgeschlagen ist
+**Wiederkehrendes Muster** (bereits einmal bei `saveScript()` aufgetreten, dann erneut bei
+`uploadFirmware()`): JS-`fetch()`-Aufrufe, die nur `.then(...)` ohne `response.ok`-Prüfung
+verwenden, zeigen eine Erfolgsmeldung selbst bei HTTP 400/500. **Beim Hinzufügen neuer
+Web-UI-Aktionen immer `r.ok`/`r.status` prüfen** (Vorlage: `saveScript()`/`deleteScript()` in
+`webserver.c`).
+
+### SD-Card-Browser: Dritte Action "Delete" (v1.4.2)
+Der SD-Browser zeigt pro Datei drei Buttons: view, download (⬇) und delete (🗑). Die Delete-
+Action basiert auf `confirm()` + `fetch('/api/sdcard/delete?path=...', {method:'DELETE'})`
+(mit `r.ok`-Prüfung nach dem Muster oben) und ruft danach `refreshSDCard()`. Server-seitig
+löst `handle_api_sdcard_delete()` (Route `DELETE /api/sdcard/delete`): Mount-Check (503),
+`path`-Parsing + URL-Decode, leeren Pfad/`..`-Traversal → 400, dann `sdcard_delete_file()`
+(`components/sdcard`), Erfolg → 200 `{"status":"deleted"}`. Nur Dateien, keine Ordner.
+
+### Web-UI: Eingebettete HTML/JS-Strings – fehlende C-String-Quotes (Build-Fehler)
+Die komplette Web-UI liegt als C-String-Literale in `webserver.c`. Beim Verlängern solcher
+String-Muster (z.B. ein weiterer Action-Button in der `actions`-Zeile des SD-Browsers) darf
+das **eröffnende oder schließende `"` des C-Literals** nie fehlen. Das Muster pro Segment:
+`"…(\\\"'"` – C-String auf, dann `\\\"` (C-Escape: `\\` → Backslash, `\"` → literales `"` im JS),
+dann `'` (JS-String-Ende), dann `"` (C-String zu).
+Fehlt eines davon, bricht der Build mit `error: missing terminating " character` sofort
+und mit Zeilenangabe – die Segmente werden dann wie Multi-Character-Literale interpretiert.
+Erkennt man gut, wenn eine neue Zeile mit `'\\"` statt `"'\\"` beginnt oder mit `\\\"'` statt
+`\\\"'"` endet. (2026-09-25 bei v1.4.2 zweimal passiert und gefixt.)
+
+### Skript-Dateiname wird beim Speichern verstümmelt (z.B. "module_rot.tx.txt")
+**Ursache (behoben 2026-09-17):** Die alte NVS-Speicherung leitete den Key direkt aus dem
+Dateinamen ab (`s_<name>`, auf 13 Zeichen gekürzt wegen des 15-Zeichen-NVS-Key-Limits) und
+hängte beim Anzeigen immer `.txt` wieder an. Bei Namen nahe der 13-Zeichen-Grenze wurde die
+`.txt`-Endung selbst mit abgeschnitten (z.B. zu `.tx`), die Endungs-Erkennung griff dann nicht
+mehr, und beim Anzeigen kam ein zweites `.txt` obendrauf.
+**Lösung:** Komplett neues Speicherschema, siehe [Script Storage (NVS)](#script-storage-nvs)
+unten.
 
 ---
 
@@ -215,15 +269,81 @@ implementiert (`handle_api_update_stream()` in `webserver.c`).
 
 ---
 
+## SD Card Config (v1.4.4)
+
+Die Datei `/config/settings.conf` auf der SD-Karte überschreibt beim Boot `g_settings` **nur im RAM**, nicht in NVS. Wird die Datei gelöscht, greifen beim nächsten Boot die alten NVS-Werte.
+
+**Format:**
+```
+ssid=MeinAP
+password=MeinPasswort
+channel=1
+ip=192.168.4.1
+autorun=start.txt
+```
+
+- Keys: ssid, password, channel, ip, gateway, netmask, autorun, buttonscript (case-insensitiv)
+- `#`-Kommentare und Leerzeilen werden ignoriert
+- Validation direkt in `settings_load_from_sd()` (keine NVS-Setter)
+
+**Wichtige Änderung zu v1.4.4:** `wifi_manager_start()` liest jetzt `settings_get_ssid()` etc. statt Compile-Time-Macros (`WIFI_AP_SSID`). Dadurch wirkt sich die SD-Config auch auf den WLAN-AP aus.
+
+---
+
+## Script Storage (NVS)
+
+**Implementiert 2026-09-17** (löst das oben dokumentierte Dateinamen-Verstümmelungsproblem):
+Skripte liegen in NVS in **festen Slots** (`components/script_storage/script_storage.c`),
+nicht mehr in namensbasierten Keys:
+
+- `s_<slot>` (Slot 0 bis `MAX_SCRIPTS-1` = 19) – der eigentliche Skript-Inhalt
+- `n_<slot>` – der **exakte** Original-Dateiname als NVS-*Value* (nicht Key!), beliebige Länge
+  bis `MAX_SCRIPT_NAME` (32 Zeichen), beliebige oder gar keine Datei-Endung
+
+**Warum Slots statt namensbasierter Keys:** NVS-Keys sind auf 15 Zeichen begrenzt – zu kurz,
+um beliebige Dateinamen direkt als Key zu codieren. Der Name landet stattdessen als Value
+unter einem kurzen, namensunabhängigen Key (`n_0` .. `n_19`), wodurch weder Kürzungs- noch
+Kollisionsprobleme bei langen Namen auftreten. Ein früherer Versuch, den Namen zusätzlich zu
+einem namensbasierten Key zu speichern (`s_<name>_name`), scheiterte historisch am selben
+15-Zeichen-Limit (siehe Git-Historie) – der Slot-Ansatz umgeht das komplett, da der Key nie
+vom Namen abhängt.
+
+**Lookup:** `find_slot_by_name()` iteriert alle 20 Slots und vergleicht `n_<slot>` case-
+insensitiv mit dem gesuchten Namen. `find_free_slot()` liefert den ersten Slot ohne
+`n_<slot>`-Eintrag für neue Skripte. Die öffentliche API (`script_storage_save/load/delete/
+exists/list`, `components/script_storage/include/script_storage.h`) ist unverändert
+namensbasiert – Aufrufer (Web-UI, DuckyScript-Interpreter) merken von der Umstellung nichts.
+
+**⚠️ Migration:** Skripte, die unter dem alten Schema gespeichert wurden, werden vom neuen
+Code nicht mehr gefunden (andere Key-Struktur) – sie bleiben als verwaiste NVS-Einträge
+liegen (kein Datenverlust, aber unsichtbar). Vor einem Firmware-Update auf diesen Stand ggf.
+erst über die Web-UI unter "Sync" → "Backup" auf die SD-Karte sichern und danach per "Sync"
+wieder importieren.
+
+**Web-UI:** Erzwingt beim Anlegen (`createScript()` in `webserver.c`) keine `.txt`-Endung
+mehr – der eingegebene Name wird 1:1 übernommen.
+
+---
+
 ## DuckyScript-Interpreter
 
 Unterstützte Befehle (siehe `components/duckyscript/duckyscript.c`):
 - `REM`, `DELAY`, `DEFAULT_DELAY`, `STRING`, `ENTER`
 - `GUI`, `CTRL`, `ALT`, `SHIFT`, `SPACE`, `TAB`, `ESC`
-- `LOCALE`, `LED`, `VAR`, `REPEAT`, `KEYCODE`
+- `LOCALE`, `LED`, `VAR`, `REPEAT`, `KEYCODE`, `RUN` (siehe unten)
 - `ATTACKMODE` (siehe unten)
 
 Skripte aus NVS (primär) oder SD-Karte `/sdcard/scripts/*.txt` (Fallback)
+
+### RUN – Skript-Verkettung
+
+`RUN <filename>` lädt beim Erreichen dieser Zeile nahtlos ein weiteres Skript nach und führt
+es im selben Task weiter aus, statt zu terminieren – üblicherweise als letzte Zeile eines
+Skripts eingesetzt, um eine Kette von Skripten ohne erneuten Start über die Web-UI
+auszuführen. Restliche Zeilen nach `RUN` im aktuellen Skript werden übersprungen
+(`script_task()` bricht die Zeilenschleife ab, sobald `ctx.run_next` gesetzt ist).
+`STOP` funktioniert weiterhin auch mitten in einer Kette. Keine Schutzmaßnahme gegen
+Endlosketten (A ruft B ruft A...) – `STOP` bleibt dafür der Ausweg.
 
 ### ATTACKMODE – Bash Bunny Philosophie
 
@@ -249,6 +369,28 @@ DELAY 2000
 STRING powershell -c "..."
 ENTER
 ```
+
+---
+## Script Logging (v1.4.4)
+
+Jede Skript-Ausführung erzeugt eine Logdatei in `/logs/<scriptname>_<boot_s>.log`.
+
+**Inhalt:**
+```
+= EvilDuck32 Script Log =
+Script: loot_windows.txt
+Start: boot +5123ms
+---
+[+00000] LINE    1 | REM Windows Loot
+[+15230] LINE    3 | ATTACKMODE RNDIS 15000
+---
+End: boot +18345ms
+Status: FINISHED
+```
+
+**Auto-Cleanup:** Wenn freier Speicher < 512 KB, werden alte Logs gelöscht (5 neueste bleiben).
+
+**⚠️ Stack-Overflow-Gefahr:** `sdcard_dir_list_t` (~41 KB) ist zu groß für den 8-KB-`script_task`-Stack. Wird per `malloc()` auf dem Heap allokiert (`ducky_log_cleanup()` in `duckyscript.c`).
 
 ---
 
