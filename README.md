@@ -42,7 +42,6 @@ If you don't have authorization — don't plug it in.
 - [OTA Firmware Updates](#ota-firmware-updates)
 - [SD Card Configuration](#sd-card-configuration)
 - [Script Logging](#script-logging)
-- [GPIO Pinout](#gpio-pinout)
 - [Known Issues & Troubleshooting](#known-issues--troubleshooting)
 - [Roadmap](#roadmap)
 - [Credits](#credits)
@@ -82,25 +81,6 @@ EvilDuck32 runs on the **Waveshare ESP32-S3-LCD-1.47** board:
 <p align="center">
   <img src="images/boot_key.jpeg" alt="Exploded diagram showing the Display, BOOT button, RESET button and USB-A connector" width="420">
 </p>
-
-### GPIO Pinout
-
-| Function | Pin |
-|---|---|
-| LCD MOSI | 45 |
-| LCD SCLK | 40 |
-| LCD DC | 41 |
-| LCD RST | 39 |
-| LCD CS | 42 |
-| LCD Backlight | 48 |
-| Status LED (WS2812) | 38 |
-| SD CLK | 14 |
-| SD CMD | 15 |
-| SD D0 | 16 |
-| SD D1 | 18 |
-| SD D2 | 17 |
-| SD D3 | 21 |
-| BOOT button (Arming Mode trigger) | 0 |
 
 ---
 
