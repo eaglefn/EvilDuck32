@@ -35,8 +35,13 @@ pio run --target upload --target monitor
 `components/settings/include/settings.h` – wird sowohl im Display-Titel (`src/app_main.c`)
 als auch in der Web-UI (`/api/status`, Nav-Leiste) verwendet, damit beide nie auseinanderlaufen.
 Fertige `firmware.bin`-Builds werden zusätzlich manuell unter `firmware/v<X.Y.Z>/firmware.bin`
-abgelegt (lokales Archiv, nicht in Git getrackt) – bei einer neuen Version: Konstante bumpen,
-`pio run`, Ergebnis in einen neuen `firmware/vX.Y.Z/`-Unterordner kopieren.
+abgelegt – bei einer neuen Version: Konstante bumpen, `pio run`, Ergebnis in einen neuen
+`firmware/vX.Y.Z/`-Unterordner kopieren. **Seit v1.4.4 ist dieser Ordner Teil des Git-Repos**
+(README verlinkt ihn für Pre-built-Downloads ohne eigenen Build, siehe
+[Flashing a Pre-built Binary](README.md#flashing-a-pre-built-binary-no-build-required)) –
+es werden bewusst nur die **beiden aktuellsten Versionen** mitversioniert: beim Hinzufügen
+einer neuen Version die älteste der beiden vorhandenen löschen, sodass immer genau zwei
+Unterordner übrig bleiben.
 
 ---
 

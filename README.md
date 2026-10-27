@@ -145,6 +145,30 @@ pio run --target upload --target monitor
 
 PlatformIO flashes the bootloader, partition table and application image together, so this is the recommended path for a first-time flash on a blank board. Subsequent firmware updates can be done wirelessly — see [OTA Firmware Updates](#ota-firmware-updates).
 
+### Flashing a Pre-built Binary (No Build Required)
+
+Don't want to install PlatformIO or build from source? Pre-built `firmware.bin` images for the latest releases are kept in the [`firmware/`](firmware) folder of this repository (currently v1.4.3 and v1.4.4) — just download one and flash it directly.
+
+**Option A — Over the air via the Web UI (easiest: no cable, no tools)**
+
+If the board already has any EvilDuck32 version with OTA support (v1.3.0+) running, download the `.bin` and upload it through the web UI's **Firmware Update** panel — see [OTA Firmware Updates](#ota-firmware-updates). Nothing to install at all.
+
+**Option B — Over USB via esptool**
+
+Use this if you don't have network access to the web UI, or prefer flashing over a cable:
+
+```bash
+# Install esptool (one-time)
+pip install esptool
+
+# Flash the downloaded firmware.bin to the app partition
+esptool.py --chip esp32s3 --port <PORT> write_flash 0x20000 firmware.bin
+```
+
+Replace `<PORT>` with the board's serial port (e.g. `/dev/cu.usbmodem1101` on macOS, `COM5` on Windows, `/dev/ttyACM0` on Linux).
+
+> ⚠️ These `firmware.bin` files contain only the **application image**, not the bootloader or partition table — they're for updating a board that's already running a compatible EvilDuck32 build, not for the very first flash of a blank ESP32-S3. For that, use the full [Build & Flash](#build--flash) process above, which writes the bootloader, partition table and app together.
+
 ### First Boot
 
 1. Power the board via USB. The display shows the current mode, SD status, HID status and the Wi-Fi AP's IP address.
@@ -347,7 +371,7 @@ New firmware can be flashed directly from the **Editor** tab's "Firmware Update"
 - `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is active: if the new image fails to boot cleanly, the bootloader automatically rolls back to the previous, known-good slot. The current slot is only marked valid once the app has finished its normal boot sequence.
 - The flow: `esp_ota_begin()` → streamed write → `esp_ota_end()` (validates the image header/checksum) → set boot partition → send the HTTP response → reboot.
 
-To build a new image yourself, run `pio run` and upload the resulting `firmware.bin` from `.pio/build/evilduck32/` through the web UI.
+To build a new image yourself, run `pio run` and upload the resulting `firmware.bin` from `.pio/build/evilduck32/` through the web UI — or skip the build entirely and grab a pre-built one from [`firmware/`](firmware), see [Flashing a Pre-built Binary](#flashing-a-pre-built-binary-no-build-required).
 
 ---
 
