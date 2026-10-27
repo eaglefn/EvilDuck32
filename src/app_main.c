@@ -176,7 +176,7 @@ void app_main(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
 
     lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "EvilDuck32 v1.1.0");
+    lv_label_set_text(title, "EvilDuck32 v" EVILDUCK32_VERSION);
     lv_obj_set_style_text_color(title, lv_color_hex(0x0000FF), 0);
     lv_obj_set_style_text_font(title, LV_FONT_DEFAULT, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
@@ -196,6 +196,9 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing SD-Card after USB HID...");
     vTaskDelay(pdMS_TO_TICKS(200));  // Let USB HID fully initialize
     sdcard_init();  // Non-fatal if SD not present
+
+    // Load settings from SD card /config/settings.conf (overrides NVS defaults)
+    settings_load_from_sd();
 
     // Initialize WiFi Manager (AP mode)
     ret = wifi_manager_init();

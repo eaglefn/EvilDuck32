@@ -1,6 +1,7 @@
 #include "settings.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "sdcard.h"
 #include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
@@ -331,5 +332,118 @@ esp_err_t settings_parse_json(const char *json) {
     err = extract_json_str(json, "buttonscript", buf, sizeof(buf));
     if (err == ESP_OK) settings_set_buttonscript(buf);
 
+    return ESP_OK;
+}
+
+// ===== SD Card Config ===== //
+// Load settings from /sdcard/config/settings.conf (overrides NVS defaults).
+// Updates g_settings in RAM only – does NOT write to NVS, so deleting the SD
+// file restores the original NVS values on the next boot.
+// Format: key=value, one per line. # comments and blank lines are ignored.
+// Unknown keys are logged at DEBUG level.
+esp_err_t settings_load_from_sd(void)
+{
+    if (!sdcard_is_mounted()) {
+        ESP_LOGI(TAG, "SD not mounted – skipping SD config load");
+        return ESP_FAIL;
+    }
+
+    FILE *f = fopen(SD_MOUNT_POINT "/config/settings.conf", "r");
+    if (!f) {
+        ESP_LOGI(TAG, "No /config/settings.conf found – using NVS defaults");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "Loading settings from /config/settings.conf");
+
+    char line[128];
+    int loaded = 0;
+    while (fgets(line, sizeof(line), f)) {
+        // Trim trailing whitespace
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' ||
+                           line[len - 1] == ' ' || line[len - 1] == '\t'))
+            line[--len] = '\0';
+
+        // Skip empty lines and comments
+        if (len == 0 || line[0] == '#') continue;
+
+        // Split at first '='
+        char *eq = strchr(line, '=');
+        if (!eq) continue; // no '=' → skip
+
+        *eq = '\0';
+        char *key = line;
+        char *value = eq + 1;
+
+        // Trim whitespace from key and value
+        while (*key == ' ' || *key == '\t') key++;
+        while (*value == ' ' || *value == '\t') value++;
+
+        if (*key == '\0' || *value == '\0') continue;
+
+        // Match known keys (case-insensitive) and update g_settings in RAM only
+        if (strcasecmp(key, "ssid") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.ssid)) {
+                strncpy(g_settings.ssid, value, sizeof(g_settings.ssid) - 1);
+                g_settings.ssid[sizeof(g_settings.ssid) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "password") == 0) {
+            size_t slen = strlen(value);
+            if (slen >= 8 && slen < sizeof(g_settings.password)) {
+                strncpy(g_settings.password, value, sizeof(g_settings.password) - 1);
+                g_settings.password[sizeof(g_settings.password) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "channel") == 0) {
+            int ch = atoi(value);
+            if (ch >= 1 && ch <= 13) {
+                g_settings.channel = ch;
+                loaded++;
+            }
+        } else if (strcasecmp(key, "ip") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.ip_addr)) {
+                strncpy(g_settings.ip_addr, value, sizeof(g_settings.ip_addr) - 1);
+                g_settings.ip_addr[sizeof(g_settings.ip_addr) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "gateway") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.gateway)) {
+                strncpy(g_settings.gateway, value, sizeof(g_settings.gateway) - 1);
+                g_settings.gateway[sizeof(g_settings.gateway) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "netmask") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.netmask)) {
+                strncpy(g_settings.netmask, value, sizeof(g_settings.netmask) - 1);
+                g_settings.netmask[sizeof(g_settings.netmask) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "autorun") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.autorun)) {
+                strncpy(g_settings.autorun, value, sizeof(g_settings.autorun) - 1);
+                g_settings.autorun[sizeof(g_settings.autorun) - 1] = '\0';
+                loaded++;
+            }
+        } else if (strcasecmp(key, "buttonscript") == 0) {
+            size_t slen = strlen(value);
+            if (slen > 0 && slen < sizeof(g_settings.buttonscript)) {
+                strncpy(g_settings.buttonscript, value, sizeof(g_settings.buttonscript) - 1);
+                g_settings.buttonscript[sizeof(g_settings.buttonscript) - 1] = '\0';
+                loaded++;
+            }
+        } else {
+            ESP_LOGD(TAG, "Unknown config key: %s", key);
+        }
+    }
+
+    fclose(f);
+    ESP_LOGI(TAG, "SD config loaded: %d settings applied (RAM only, not saved to NVS)", loaded);
     return ESP_OK;
 }

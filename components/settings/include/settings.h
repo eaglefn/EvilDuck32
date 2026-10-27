@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+// Firmware version - single source of truth, shown on the display (src/app_main.c)
+// and in the Web-UI (components/webserver/webserver.c, nav bar + /api/status)
+#define EVILDUCK32_VERSION "1.4.4"
+
 // Settings keys (NVS)
 #define NVS_NAMESPACE "settings"
 #define NVS_KEY_SSID "ssid"
@@ -41,6 +45,9 @@ typedef struct {
 
 // Initialize settings module (load from NVS or set defaults)
 esp_err_t settings_init(void);
+
+// Load settings from SD card /config/settings.conf (overrides NVS defaults)
+esp_err_t settings_load_from_sd(void);
 
 // Save all settings to NVS
 esp_err_t settings_save(void);
