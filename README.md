@@ -8,8 +8,8 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <p align="center">
-  <img src="Bilder/EvilDuck32_HID_Mode.jpeg" alt="EvilDuck32 plugged into a USB port, display showing HID mode status" width="320">
-  <img src="Bilder/EvilDuck32_Backside.jpeg" alt="EvilDuck32 backside with ESP32-S3 module and microSD card" width="320">
+  <img src="images/EvilDuck32_HID_Mode.jpeg" alt="EvilDuck32 plugged into a USB port, display showing HID mode status" width="320">
+  <img src="images/EvilDuck32_Backside.jpeg" alt="EvilDuck32 backside with ESP32-S3 module and microSD card" width="320">
 </p>
 
 ---
@@ -79,7 +79,7 @@ EvilDuck32 runs on the **Waveshare ESP32-S3-LCD-1.47** board:
 | Form factor | USB-A male plug, no cable needed |
 
 <p align="center">
-  <img src="Bilder/boot_key.jpeg" alt="Exploded diagram showing the Display, BOOT button, RESET button and USB-A connector" width="420">
+  <img src="images/boot_key.jpeg" alt="Exploded diagram showing the Display, BOOT button, RESET button and USB-A connector" width="420">
 </p>
 
 ### GPIO Pinout
@@ -109,14 +109,14 @@ The web UI is organized into five tabs: **Scripts** (home), **SD Card**, **Sync*
 
 <table>
   <tr>
-    <td align="center"><img src="Bilder/scripts.png" width="280"><br><sub>Scripts — list, run, auto-run and delete payloads</sub></td>
-    <td align="center"><img src="Bilder/editor.png" width="280"><br><sub>Editor — edit/run scripts, live run control, firmware upload</sub></td>
-    <td align="center"><img src="Bilder/settings.png" width="280"><br><sub>Settings — Wi-Fi AP config, auto-run script, factory reset</sub></td>
+    <td align="center"><img src="images/scripts.png" width="280"><br><sub>Scripts — list, run, auto-run and delete payloads</sub></td>
+    <td align="center"><img src="images/editor.png" width="280"><br><sub>Editor — edit/run scripts, live run control, firmware upload</sub></td>
+    <td align="center"><img src="images/settings.png" width="280"><br><sub>Settings — Wi-Fi AP config, auto-run script, factory reset</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="Bilder/SD-Card_Browser.png" width="280"><br><sub>SD Card browser — view / download / delete files</sub></td>
-    <td align="center"><img src="Bilder/SD-Card_Sync.png" width="280"><br><sub>Sync — compare & merge NVS scripts with the SD card</sub></td>
-    <td align="center"><img src="Bilder/EvilDuck32_Arming_Mode.jpeg" width="280"><br><sub>Arming Mode — SD card exposed as a USB drive</sub></td>
+    <td align="center"><img src="images/SD-Card_Browser.png" width="280"><br><sub>SD Card browser — view / download / delete files</sub></td>
+    <td align="center"><img src="images/SD-Card_Sync.png" width="280"><br><sub>Sync — compare & merge NVS scripts with the SD card</sub></td>
+    <td align="center"><img src="images/EvilDuck32_Arming_Mode.jpeg" width="280"><br><sub>Arming Mode — SD card exposed as a USB drive</sub></td>
   </tr>
 </table>
 
@@ -204,7 +204,7 @@ Boot sequence (`src/app_main.c`): NVS → event loop → LED → SD card → dis
 Scripts are plain text, stored either in internal flash (NVS, 20 slots) or on the SD card under `/scripts/`. Commands are **case-insensitive**; lines starting with `REM` are comments.
 
 <p align="center">
-  <img src="Bilder/Ducky_Scripts_Commands.png" alt="DuckyScript command reference from the built-in web UI" width="640">
+  <img src="images/Ducky_Scripts_Commands.png" alt="DuckyScript command reference from the built-in web UI" width="640">
 </p>
 
 ### Core Commands
