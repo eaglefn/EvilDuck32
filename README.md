@@ -176,6 +176,17 @@ Replace `<PORT>` with the board's serial port (e.g. `/dev/cu.usbmodem1101` on ma
 3. Open `http://192.168.4.1` in a browser to reach the web UI.
 4. Write or upload a DuckyScript payload under **Scripts**, then hit **RUN**.
 
+### Example Payloads
+
+Want to try something before writing your own? The [`example-payloads/`](example-payloads) folder has four ready-to-run DuckyScript demos — upload one via the **Scripts** tab and hit RUN:
+
+| Script | What it does |
+|---|---|
+| `easy_user` | Opens a normal (non-elevated) Command Prompt and runs a PowerShell info command |
+| `easy_admin` | Opens an elevated (Administrator) Command Prompt via UAC, then runs the same info command |
+| `led_test` | Cycles the onboard RGB LED through test colors |
+| `run_test` | Runs the info command, then chains into `led_test` via `RUN` to demonstrate script chaining |
+
 ---
 
 ## Build & Development
@@ -359,7 +370,7 @@ The web UI talks to the device over a small REST API served from the same HTTP s
 | `/api/upload` | POST | Upload a file to the SD card |
 | `/api/update` | POST | Stream a new firmware image for OTA update |
 | `/payload/<filename>` | GET | Serve a file from `/payloads/` on the SD card (e.g. for a script to `curl` down onto the target) |
-| `/debug` | — | Lightweight debug/diagnostics output |
+| `/api/debug` | GET | Lightweight debug/diagnostics output |
 
 ---
 
